@@ -1,0 +1,6 @@
+/**:
+  ros__parameters:
+    image_topic: "/camera/image_raw"   # Image topic to subscribe to
+    weights_file: "weights/yolov4_1_3_416_416_static.onnx"  # Path to ONNX weights file
+    confidence_threshold: 0.5  # Confidence threshold for detections
+    iou_threshold: 0.4  # IoU threshold for filtering overlapping boxes
