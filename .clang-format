@@ -22,10 +22,11 @@ BraceWrapping:
   AfterExternBlock: true
   BeforeCatch:     true
   BeforeElse:      true
-  IndentBraces:    true
+  IndentBraces:    false
   SplitEmptyFunction: false
   SplitEmptyRecord: false
   SplitEmptyNamespace: false
+ColumnLimit: 90
 ContinuationIndentWidth: 2
 Cpp11BracedListStyle: true
 KeepEmptyLinesAtTheStartOfBlocks: false

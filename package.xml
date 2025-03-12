@@ -12,6 +12,8 @@
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>image_transport</depend>
+  <depend>libopencv-dev</depend>
+  <depend>libspdlog-dev</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
