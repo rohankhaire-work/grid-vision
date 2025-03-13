@@ -1,10 +1,10 @@
 #include "grid_vision/object_detection.hpp"
-#include <memory>
-#include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace object_detection
 {
-  cv::Mat preprocess_image(const cv::Mat &image, int input_width, int input_height)
+  cv::Mat
+  preprocess_image(const cv::Mat &image, uint16_t input_width, uint16_t input_height)
   {
     cv::Mat resized, float_image;
 
@@ -61,13 +61,11 @@ namespace object_detection
   }
 
   // **3️⃣ Run Inference on Preprocessed Image**
-  std::vector<float> run_inference(const std::vector<float> &image_tensor,
-                                   const std::unique_ptr<Ort::Session> &session)
+  std::vector<Ort::Value> run_inference(const std::vector<float> &image_tensor,
+                                        const std::unique_ptr<Ort::Session> &session)
   {
     try
     {
-      // Convert OpenCV Mat → ONNX Tensor
-      // Batch, Channels, Height, Width
       std::vector<int64_t> input_shape
         = session->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
 
@@ -86,15 +84,75 @@ namespace object_detection
       auto output_tensors = session->Run(Ort::RunOptions{nullptr}, input_names,
                                          &input_tensor, 1, output_names, 1);
 
-      // Extract Results
-      float *output_data = output_tensors.front().GetTensorMutableData<float>();
-      return std::vector<float>(output_data,
-                                output_data + 10); // Assuming 10 output classes
+      return output_tensors;
     }
     catch(const std::exception &e)
     {
       spdlog::error("Inference error: %s", e.what());
       return {};
     }
+  }
+
+  std::vector<BoundingBox>
+  extract_bboxes(Ort::Value &output_tensor, double conf_threshold)
+  {
+    std::vector<BoundingBox> boxes;
+
+    float *raw_output = output_tensor.GetTensorMutableData<float>();
+    auto shape = output_tensor.GetTensorTypeAndShapeInfo().GetShape();
+
+    int num_detections = shape[0]; // Number of detected objects
+    int num_features = shape[1];   // Number of output values per detection
+
+    for(int i = 0; i < num_detections; i++)
+    {
+      float x_center = raw_output[i * num_features + 0];
+      float y_center = raw_output[i * num_features + 1];
+      float width = raw_output[i * num_features + 2];
+      float height = raw_output[i * num_features + 3];
+      float confidence = raw_output[i * num_features + 4];
+
+      if(confidence < conf_threshold)
+        continue; // Ignore low-confidence detections
+
+      // Find the class with the highest probability
+      int class_id = -1;
+      float max_prob = 0.0;
+      for(int j = 5; j < num_features; j++)
+      {
+        if(raw_output[i * num_features + j] > max_prob)
+        {
+          max_prob = raw_output[i * num_features + j];
+          class_id = j - 5; // Class index
+        }
+      }
+
+      // Convert center-based to top-left-based bbox
+      float x = x_center - width / 2.0;
+      float y = y_center - height / 2.0;
+
+      boxes.push_back({x, y, width, height, confidence, class_id});
+    }
+
+    return boxes;
+  }
+
+  void draw_bboxes(cv::Mat &image, const std::vector<BoundingBox> &bboxes)
+  {
+    for(const auto &box : bboxes)
+    {
+      cv::Rect rect(box.x, box.y, box.width, box.height);
+      cv::rectangle(image, rect, cv::Scalar(0, 255, 0), 2);
+      std::string label = "Class " + std::to_string(box.class_id) + " ("
+                          + std::to_string(box.confidence) + ")";
+      cv::putText(image, label, cv::Point(box.x, box.y - 5), cv::FONT_HERSHEY_SIMPLEX,
+                  0.5, cv::Scalar(0, 255, 0), 1);
+    }
+  }
+
+  cv::Mat setIntrinsicMatrix(double fx, double fy, double cx, double cy)
+  {
+    cv::Mat K = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, cy, 0, 0, 1);
+    return K;
   }
 };
