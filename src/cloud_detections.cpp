@@ -1,4 +1,5 @@
 #include "grid_vision/cloud_detections.hpp"
+#include <geometry_msgs/msg/detail/point__struct.hpp>
 
 namespace cloud_detections
 {
@@ -82,5 +83,21 @@ namespace cloud_detections
     }
 
     return depths;
+  }
+
+  geometry_msgs::msg::Point
+  pixelTo3D(const cv::Point2f &pixel, float depth, const cv::Mat &K_inv)
+  {
+    // Convert pixel coordinates to homogeneous coordinates
+    cv::Mat pixel_homogeneous = (cv::Mat_<float>(3, 1) << pixel.x, pixel.y, 1.0f);
+    // Compute the 3D point in camera frame: X_cam = K_inv * (u, v, 1) * depth
+    cv::Mat cam_point_mat = K_inv * pixel_homogeneous * depth;
+
+    geometry_msgs::msg::Point cam_point;
+    cam_point.x = cam_point_mat.at<float>(0, 0);
+    cam_point.y = cam_point_mat.at<float>(1, 0);
+    cam_point.z = cam_point_mat.at<float>(2, 0);
+
+    return cam_point;
   }
 }

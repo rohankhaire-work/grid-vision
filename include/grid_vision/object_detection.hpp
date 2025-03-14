@@ -9,10 +9,25 @@
 #include <spdlog/spdlog.h>
 #include <sys/types.h>
 
+// Enum for object class labels
+enum class ObjectClass
+{
+  BIKE = 0,
+  MOTORBIKE = 1,
+  PERSON = 2,
+  TRAFFIC_LIGHT_GREEN = 3,
+  TRAFFIC_LIGHT_ORANGE = 4,
+  TRAFFIC_LIGHT_RED = 5,
+  TRAFFIC_SIGN_30 = 6,
+  TRAFFIC_SIGN_60 = 7,
+  TRAFFIC_SIGN_90 = 8,
+  VEHICLE = 9
+};
+
 struct BoundingBox
 {
   float x, y, width, height, confidence;
-  int class_id;
+  ObjectClass label;
 };
 
 namespace object_detection
@@ -34,5 +49,12 @@ namespace object_detection
   void draw_bboxes(cv::Mat &, const std::vector<BoundingBox> &);
 
   cv::Mat setIntrinsicMatrix(double, double, double, double);
+
+  cv::Mat computeKInverse(const cv::Mat &);
+
+  ObjectClass getObjectClass(int);
+
+  std::string objectClassToString(ObjectClass);
+
 }
 #endif // OBJECT_DETECTION__OBJECT_DETECTION_HPP_

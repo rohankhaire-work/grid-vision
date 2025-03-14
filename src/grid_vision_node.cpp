@@ -1,5 +1,4 @@
 #include "grid_vision/grid_vision_node.hpp"
-#include "grid_vision/cloud_detections.hpp"
 
 GridVision::GridVision() : Node("grid_vision_node")
 {
@@ -8,6 +7,7 @@ GridVision::GridVision() : Node("grid_vision_node")
   weight_file_ = declare_parameter<std::string>("weights_file", "");
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", "");
   camera_frame_ = declare_parameter<std::string>("camera_frame", "");
+  base_frame_ = declare_parameter<std::string>("base_link", "");
   conf_threshold_ = declare_parameter("confidence_threshold", 0.5);
   iou_threshold_ = declare_parameter("iou_threshold", 0.4);
   resize_ = declare_parameter("network_input_size", 416);
@@ -16,6 +16,12 @@ GridVision::GridVision() : Node("grid_vision_node")
   cx_ = declare_parameter("cx", 0);
   cy_ = declare_parameter("cy", 0);
   k_near_ = declare_parameter("k_near", 10);
+  grid_x_ = declare_parameter("grid_x", 50);
+  grid_y_ = declare_parameter("grid_y", 10);
+  resolution_ = declare_parameter("resolution", 0.1);
+
+  // Initialize occupancy grid
+  occ_grid_ = OccupancyGridMap(base_frame_, grid_x_, grid_y_, resolution_);
 
   if(image_topic_.empty() || weight_file_.empty())
   {
@@ -35,6 +41,7 @@ GridVision::GridVision() : Node("grid_vision_node")
                                    std::bind(&GridVision::timerCallback, this));
 
   detection_pub_ = it.advertise("carla/rgb/front/detections", 1);
+  occupancy_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("occupancy_grid", 10);
 
   // Initialize ONNX runtim
   session_ = object_detection::initialize_onnx_runtime(env_, session_options_,
@@ -112,8 +119,19 @@ void GridVision::timerCallback()
   std::vector<float> depth = cloud_detections::computeDepthForBoundingBoxes(
     kdtree, image_points, bboxes, k_near_);
 
-  // Publish 2D detections
+  // Kinverse
+  cv::Mat K_inv = object_detection::computeKInverse(intrinsic_mat_);
+
+  // Get the 3D co-ordinates of 2D detection in base frame
+  std::vector < geometry_msgs::msg::Point > 3d_points
+    = convertPixelsTo3D(bboxes, depth, K_inv);
+
+  // Update the occupancy grid map
+  occ_grid_.updateMap(occ_grid_.grid_map_, 3d_points, bboxes);
+
+  // Publish 2D detections and Occupancy grid
   publishObjectDetections(detection_pub_, bboxes, init_image_);
+  publishOccupancyGrid(occ_grid_.grid_map_, base_frame_);
 }
 
 void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
@@ -130,6 +148,21 @@ void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
 
   // Publish image
   pub.publish(*msg);
+}
+
+void GridVision::publishOccupancyGrid(const grid_map::GridMap &grid_map,
+                                      const std::string &base)
+{
+  // Convert GridMap to OccupancyGrid
+  nav_msgs::msg::OccupancyGrid occupancy_grid;
+  grid_map::GridMapRosConverter::toOccupancyGrid(grid_map, "occupancy", 0.0, 1.0,
+                                                 occupancy_grid);
+
+  // Set header info
+  occupancy_grid.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+  occupancy_grid.header.frame_id = base; // Set appropriate frame
+
+  occupancy_pub_->publish(occupancy_grid);
 }
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr
@@ -159,6 +192,52 @@ GridVision::transformLidarToCamera(const pcl::PointCloud<pcl::PointXYZ>::Ptr &li
   pcl_ros::transformPointCloud(*lidar_cloud, *transformed_cloud, tf_transform);
 
   return transformed_cloud;
+}
+
+std::vector<geometry_msgs::msg::Point>
+GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
+                              const std::vector<float> &depths, const cv::Mat &K_inv)
+{
+  std::vector<geometry_msgs::msg::Point> point_vec;
+
+  for(size_t i = 0; i < bboxes.size(); ++i)
+  {
+    // Compute the pixel center
+    cv::Point2f pixel_center(bboxes[i].x + bboxes[i].width / 2.0f,
+                             bboxes[i].y + bboxes[i].height / 2.0f);
+
+    // Convert to 3D point in camera frame
+    geometry_msgs::msg::Point cam_point
+      = cloud_detections::pixelTo3D(pixel_center, depths[i], K_inv);
+
+    // Transform to base frame
+    geometry_msgs::msg::Point base_point = transformToBaseFrame(cam_point);
+
+    point_vec.emplace_back(base_point);
+  }
+}
+
+geometry_msgs::msg::Point
+transformToBaseFrame(const geometry_msgs::msg::Point &cam_point,
+                     const std::string &source, const std::string &target)
+{
+  geometry_msgs::msg::Point base_point;
+
+  try
+  {
+    // Lookup transform from camera frame to base frame
+    geometry_msgs::msg::TransformStamped transform_stamped
+      = tf_buffer_->lookupTransform(source, target, tf2::TimePointZero);
+
+    // Transform the point
+    tf2::doTransform(cam_point, base_point, transform_stamped);
+  }
+  catch(tf2::TransformException &ex)
+  {
+    RCLCPP_ERROR(this->get_logger(), "Transform failed: %s", ex.what());
+  }
+
+  return base_point;
 }
 
 int main(int argc, char *argv[])

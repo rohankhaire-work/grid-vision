@@ -4,6 +4,7 @@
 #include "grid_vision/object_detection.hpp"
 #include <pcl/point_cloud.h>
 #include <pcl/kdtree/kdtree_flann.h>
+#include <geometry_msgs/msg/point.hpp>
 
 #include <vector>
 
@@ -16,6 +17,8 @@ namespace cloud_detections
   computeDepthForBoundingBoxes(pcl::KdTreeFLANN<pcl::PointXYZ> &,
                                pcl::PointCloud<pcl::PointXYZ>::Ptr,
                                const std::vector<BoundingBox> &, uint16_t);
+
+  geometry_msgs::msg::Point pixelTo3D(const cv::Point2f &, float, const cv::Mat &);
 
 }
 

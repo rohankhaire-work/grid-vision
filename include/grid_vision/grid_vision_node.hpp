@@ -3,13 +3,14 @@
 
 #include "grid_vision/object_detection.hpp"
 #include "grid_vision/cloud_detections.hpp"
+#include "grid_vision/occupancy_grid.hpp"
 
-#include <cstdint>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/core/hal/interface.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <image_transport/image_transport.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl_ros/transforms.hpp>
@@ -19,6 +20,7 @@
 
 #include <memory>
 #include <vector>
+#include <string>
 
 class GridVision : public rclcpp::Node
 {
@@ -31,11 +33,14 @@ private:
   std::string weight_file_;
   std::string lidar_frame_;
   std::string camera_frame_;
+  std::string base_frame_;
   double conf_threshold_;
   double iou_threshold_;
   uint16_t resize_;
   double fx_, fy_;
   uint16_t cx_, cy_, k_near_;
+  uint8_t grid_x_, grid_y_;
+  double resolution_;
 
   // Variables
   cv::Mat init_image_;
@@ -43,6 +48,7 @@ private:
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+  OccupancyGridMap occ_grid_;
 
   // ONNX
   std::unique_ptr<Ort::Session> session_;
@@ -56,15 +62,27 @@ private:
 
   // Publishers
   image_transport::Publisher detection_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_pub_;
 
   void timerCallback();
   void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr &);
   void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &);
   void publishObjectDetections(const image_transport::Publisher &,
                                std::vector<BoundingBox> &, cv::Mat &);
-  pcl::PointCloud<pcl::PointXYZ>::Ptr
-  transformLidarToCamera(const pcl::PointCloud<pcl::PointXYZ>::Ptr &, const std::string &,
-                         const std::string &);
+  void publishOccupancyGrid(const grid_map::GridMap &grid_map, const std::string &base)
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr
+    transformLidarToCamera(const pcl::PointCloud<pcl::PointXYZ>::Ptr &,
+                           const std::string &, const std::string &);
+  void convertPixelsTo3D(const std::vector<BoundingBox> &, const std::vector<float> &,
+                         const cv::Mat &);
+  geometry_msgs::msg::Point
+  transformToBaseFrame(const geometry_msgs::msg::Point &, const std::string &,
+                       const std::string &);
+
+  std::vector<geometry_msgs::msg::Point>
+  convertPixelsTo3D(const std::vector<BoundingBox> &, const std::vector<float> &,
+                    const cv::Mat &);
 };
 
 #endif // GRID_VISION_NODE__GRID_VISION_NODE_HPP_

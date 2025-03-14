@@ -4,6 +4,7 @@
     weights_file: "weights/yolov4_1_3_416_416_static.onnx"  # Path to ONNX weights file
     lidar_frame: ""
     camera_frame: ""
+    base_frame: ""
     confidence_threshold: 0.5  # Confidence threshold for detections
     iou_threshold: 0.4  # IoU threshold for filtering overlapping boxes
     fx: 
@@ -11,3 +12,6 @@
     cx: 208
     cy: 208
     k_near: 10
+    grid_x: 50
+    grid_y: 10
+    resolution: 0.1

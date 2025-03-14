@@ -127,11 +127,14 @@ namespace object_detection
         }
       }
 
+      // Get Enum Class
+      ObjectClass label = getObjectClass(class_id);
+
       // Convert center-based to top-left-based bbox
       float x = x_center - width / 2.0;
       float y = y_center - height / 2.0;
 
-      boxes.push_back({x, y, width, height, confidence, class_id});
+      boxes.push_back({x, y, width, height, confidence, label});
     }
 
     return boxes;
@@ -143,8 +146,8 @@ namespace object_detection
     {
       cv::Rect rect(box.x, box.y, box.width, box.height);
       cv::rectangle(image, rect, cv::Scalar(0, 255, 0), 2);
-      std::string label = "Class " + std::to_string(box.class_id) + " ("
-                          + std::to_string(box.confidence) + ")";
+      std::string label
+        = objectClassToString(box.label) + " (" + std::to_string(box.confidence) + ")";
       cv::putText(image, label, cv::Point(box.x, box.y - 5), cv::FONT_HERSHEY_SIMPLEX,
                   0.5, cv::Scalar(0, 255, 0), 1);
     }
@@ -154,5 +157,48 @@ namespace object_detection
   {
     cv::Mat K = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, cy, 0, 0, 1);
     return K;
+  }
+
+  cv::Mat computeKInverse(const cv::Mat &K)
+  {
+    cv::Mat K_inv;
+    cv::invert(K, K_inv, cv::DECOMP_LU); // Compute the inverse using LU decomposition
+    return K_inv;
+  }
+
+  // Function to convert an integer label to ObjectClass enum
+  ObjectClass getObjectClass(int label)
+  {
+    switch(label)
+    {
+    case 0: return ObjectClass::BIKE;
+    case 1: return ObjectClass::MOTORBIKE;
+    case 2: return ObjectClass::PERSON;
+    case 3: return ObjectClass::TRAFFIC_LIGHT_GREEN;
+    case 4: return ObjectClass::TRAFFIC_LIGHT_ORANGE;
+    case 5: return ObjectClass::TRAFFIC_LIGHT_RED;
+    case 6: return ObjectClass::TRAFFIC_SIGN_30;
+    case 7: return ObjectClass::TRAFFIC_SIGN_60;
+    case 8: return ObjectClass::TRAFFIC_SIGN_90;
+    case 9: return ObjectClass::VEHICLE;
+    }
+  }
+
+  // Function to print object class
+  std::string objectClassToString(ObjectClass objClass)
+  {
+    switch(objClass)
+    {
+    case ObjectClass::BIKE: return "Bike";
+    case ObjectClass::MOTORBIKE: return "Motorbike";
+    case ObjectClass::PERSON: return "Person";
+    case ObjectClass::TRAFFIC_LIGHT_GREEN: return "Light Green";
+    case ObjectClass::TRAFFIC_LIGHT_ORANGE: return "Light Orange";
+    case ObjectClass::TRAFFIC_LIGHT_RED: return "Light Red";
+    case ObjectClass::TRAFFIC_SIGN_30: return "Sign 30";
+    case ObjectClass::TRAFFIC_SIGN_60: return "Sign 60";
+    case ObjectClass::TRAFFIC_SIGN_90: return "Sign 90";
+    case ObjectClass::VEHICLE: return "Vehicle";
+    }
   }
 };
