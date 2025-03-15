@@ -12,7 +12,7 @@ find_package(onnxruntime REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(pcl_ros REQUIRED)
-find_package(grid_map REQUIRED)
+find_package(grid_map_ros REQUIRED)
 
 add_executable(grid_vision src/grid_vision_node.cpp
                            src/object_detection.cpp
@@ -22,8 +22,8 @@ target_include_directories(grid_vision PRIVATE include
                                             ${onnxruntime_INCLUDE_DIRS}/onnxruntime
                                             ${OpenCV_INCLUDE_DIRS}
                                             ${PCL_INCLUDE_DIRS})
-ament_target_dependencies(grid_vision rclcpp cv_bridge image_transport sensor_msgs nav_msgs pcl_conversions pcl_ros
-                                      tf2_ros tf2_geometry_msgs grid_map)
+ament_target_dependencies(grid_vision rclcpp cv_bridge image_transport pcl_conversions pcl_ros
+                                      tf2_ros tf2_geometry_msgs grid_map_ros)
 
 target_link_libraries(grid_vision
     ${onnxruntime_LIBRARY}

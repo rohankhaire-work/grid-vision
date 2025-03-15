@@ -182,6 +182,8 @@ namespace object_detection
     case 8: return ObjectClass::TRAFFIC_SIGN_90;
     case 9: return ObjectClass::VEHICLE;
     }
+
+    return ObjectClass::UNKNOWN;
   }
 
   // Function to print object class
@@ -200,5 +202,7 @@ namespace object_detection
     case ObjectClass::TRAFFIC_SIGN_90: return "Sign 90";
     case ObjectClass::VEHICLE: return "Vehicle";
     }
+
+    return "Unknown";
   }
 };

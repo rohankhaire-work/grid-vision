@@ -7,6 +7,7 @@
 
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/core/hal/interface.h>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -30,6 +31,7 @@ public:
 private:
   // Params
   std::string image_topic_;
+  std::string lidar_topic_;
   std::string weight_file_;
   std::string lidar_frame_;
   std::string camera_frame_;
@@ -48,7 +50,7 @@ private:
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
-  OccupancyGridMap occ_grid_;
+  std::optional<OccupancyGridMap> occ_grid_;
 
   // ONNX
   std::unique_ptr<Ort::Session> session_;
@@ -69,13 +71,12 @@ private:
   void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &);
   void publishObjectDetections(const image_transport::Publisher &,
                                std::vector<BoundingBox> &, cv::Mat &);
-  void publishOccupancyGrid(const grid_map::GridMap &grid_map, const std::string &base)
+  void publishOccupancyGrid(const grid_map::GridMap &grid_map, const std::string &base);
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr
-    transformLidarToCamera(const pcl::PointCloud<pcl::PointXYZ>::Ptr &,
-                           const std::string &, const std::string &);
-  void convertPixelsTo3D(const std::vector<BoundingBox> &, const std::vector<float> &,
-                         const cv::Mat &);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr
+  transformLidarToCamera(const pcl::PointCloud<pcl::PointXYZ>::Ptr &, const std::string &,
+                         const std::string &);
+
   geometry_msgs::msg::Point
   transformToBaseFrame(const geometry_msgs::msg::Point &, const std::string &,
                        const std::string &);

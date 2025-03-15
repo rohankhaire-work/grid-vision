@@ -14,7 +14,8 @@ class OccupancyGridMap
 {
 public:
   OccupancyGridMap(const std::string &, uint8_t, uint8_t, double);
-  void updateMap(grid_map::GridMap &, const std::vector<geometry_msgs::msg::Point> &);
+  void updateMap(grid_map::GridMap &, const std::vector<geometry_msgs::msg::Point> &,
+                 const std::vector<BoundingBox> &);
 
   grid_map::GridMap grid_map_;
 

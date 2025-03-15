@@ -1,6 +1,7 @@
 /**:
   ros__parameters:
     image_topic: "/camera/image_raw"   # Image topic to subscribe to
+    lidar_topic: "/lidar"
     weights_file: "weights/yolov4_1_3_416_416_static.onnx"  # Path to ONNX weights file
     lidar_frame: ""
     camera_frame: ""

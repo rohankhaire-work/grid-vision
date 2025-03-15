@@ -21,7 +21,8 @@ enum class ObjectClass
   TRAFFIC_SIGN_30 = 6,
   TRAFFIC_SIGN_60 = 7,
   TRAFFIC_SIGN_90 = 8,
-  VEHICLE = 9
+  VEHICLE = 9,
+  UNKNOWN = 10
 };
 
 struct BoundingBox

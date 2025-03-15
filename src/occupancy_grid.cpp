@@ -1,5 +1,4 @@
 #include "grid_vision/occupancy_grid.hpp"
-#include "grid_vision/object_detection.hpp"
 
 OccupancyGridMap::OccupancyGridMap(const std::string &base_link, uint8_t grid_x,
                                    uint8_t grid_y, double resolution)
@@ -39,7 +38,6 @@ void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
       updateGridCellsFast(grid_map, occ_corners);
     }
   }
-
   // Convert log-odds to probability
   for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
   {
@@ -131,10 +129,11 @@ float OccupancyGridMap::getEstimatedDepth(ObjectClass class_label)
 {
   switch(class_label)
   {
-  case ObjectClass::VEHICLE: return 4.5f;  // Car (4.5m depth)
-    case ObjectClass::PERSON return 1.2f;  // Pedestrian (1.2m depth)
-    case ObjectClass::BIKE return 2.5f;  // Bicycle (2.5m depth)
-    case ObjectClass::MOTORBIKE return 2.5f; // Generic object (3.0m depth)
-    }
+  case ObjectClass::VEHICLE: return 4.5f;   // Car (4.5m depth)
+  case ObjectClass::PERSON: return 0.6f;    // Pedestrian (1.2m depth)
+  case ObjectClass::BIKE: return 2.5f;      // Bicycle (2.5m depth)
+  case ObjectClass::MOTORBIKE: return 2.5f; // Generic object (3.0m depth)
   }
+
+  return -1.0f;
 }
