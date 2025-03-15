@@ -11,7 +11,7 @@
 namespace cloud_detections
 {
   void buildKDTree(pcl::KdTreeFLANN<pcl::PointXYZ> &, pcl::PointCloud<pcl::PointXYZ>::Ptr,
-                   const pcl::PointCloud<pcl::PointXYZ>::Ptr, const cv::Mat &);
+                   const pcl::PointCloud<pcl::PointXYZI>::Ptr, const cv::Mat &);
 
   std::vector<float>
   computeDepthForBoundingBoxes(pcl::KdTreeFLANN<pcl::PointXYZ> &,

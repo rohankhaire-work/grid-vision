@@ -6,7 +6,7 @@ namespace cloud_detections
   void
   buildKDTree(pcl::KdTreeFLANN<pcl::PointXYZ> &kdtree,
               pcl::PointCloud<pcl::PointXYZ>::Ptr image_points,
-              const pcl::PointCloud<pcl::PointXYZ>::Ptr lidar_points, const cv::Mat &K)
+              const pcl::PointCloud<pcl::PointXYZI>::Ptr lidar_points, const cv::Mat &K)
   {
     for(const auto &p : lidar_points->points)
     {
@@ -53,8 +53,8 @@ namespace cloud_detections
 
       // Compute bounding box center
       pcl::PointXYZ search_point;
-      search_point.x = (bbox.x + bbox.width) / 2.0f;
-      search_point.y = (bbox.y + bbox.height) / 2.0f;
+      search_point.x = (bbox.x_max - bbox.x_min) / 2.0f;
+      search_point.y = (bbox.y_max - bbox.y_min) / 2.0f;
       search_point.z = 0.0f;
 
       std::vector<int> point_indices(k);
@@ -89,7 +89,7 @@ namespace cloud_detections
   pixelTo3D(const cv::Point2f &pixel, float depth, const cv::Mat &K_inv)
   {
     // Convert pixel coordinates to homogeneous coordinates
-    cv::Mat pixel_homogeneous = (cv::Mat_<float>(3, 1) << pixel.x, pixel.y, 1.0f);
+    cv::Mat pixel_homogeneous = (cv::Mat_<double>(3, 1) << pixel.x, pixel.y, 1.0);
     // Compute the 3D point in camera frame: X_cam = K_inv * (u, v, 1) * depth
     cv::Mat cam_point_mat = K_inv * pixel_homogeneous * depth;
 

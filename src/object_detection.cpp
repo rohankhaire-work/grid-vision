@@ -38,9 +38,8 @@ namespace object_detection
     return tensor_data;
   }
 
-  std::unique_ptr<Ort::Session>
-  initialize_onnx_runtime(Ort::Env &env, Ort::SessionOptions &options,
-                          const char *weight_file)
+  void initialize_onnx_runtime(std::unique_ptr<Ort::Session> &session, Ort::Env &env,
+                               Ort::SessionOptions &options, const char *weight_file)
   {
     try
     {
@@ -49,14 +48,12 @@ namespace object_detection
       options.SetIntraOpNumThreads(1);
       options.AppendExecutionProvider_CUDA(cuda_options);
 
-      auto session = std::make_unique<Ort::Session>(env, weight_file, options);
+      session = std::make_unique<Ort::Session>(env, weight_file, options);
       spdlog::info("ONNX Model successfully loaded on GPU!");
-      return session;
     }
     catch(const std::exception &e)
     {
-      spdlog::error("Failed to initialize ONNX Runtime: %s", e.what());
-      return nullptr;
+      spdlog::error("Failed to initialize ONNX Runtime: {}", e.what());
     }
   }
 
@@ -80,76 +77,160 @@ namespace object_detection
 
       // Run ONNX Inference
       const char *input_names[] = {"input"};
-      const char *output_names[] = {"output"};
+      const char *output_names[] = {"boxes", "confs"};
       auto output_tensors = session->Run(Ort::RunOptions{nullptr}, input_names,
-                                         &input_tensor, 1, output_names, 1);
+                                         &input_tensor, 1, output_names, 2);
 
       return output_tensors;
     }
     catch(const std::exception &e)
     {
-      spdlog::error("Inference error: %s", e.what());
+      spdlog::error("Inference error: {}", e.what());
       return {};
     }
   }
 
+  // Optimized extraction using Eigen for vectorization
   std::vector<BoundingBox>
-  extract_bboxes(Ort::Value &output_tensor, double conf_threshold)
+  extract_bboxes(const std::vector<Ort::Value> &output_tensors, double conf_threshold,
+                 double iou_threshold, int img_size)
   {
-    std::vector<BoundingBox> boxes;
+    std::vector<BoundingBox> bboxes;
+    std::vector<BoundingBox> nms_bboxes;
 
-    float *raw_output = output_tensor.GetTensorMutableData<float>();
-    auto shape = output_tensor.GetTensorTypeAndShapeInfo().GetShape();
+    // Get tensor shapes
+    auto shape_boxes = output_tensors[0].GetTensorTypeAndShapeInfo().GetShape();
+    auto shape_scores = output_tensors[1].GetTensorTypeAndShapeInfo().GetShape();
 
-    int num_detections = shape[0]; // Number of detected objects
-    int num_features = shape[1];   // Number of output values per detection
+    int num_detections = shape_boxes[1]; // 2535
+    int num_classes = shape_scores[2];   // 10
+
+    // Access raw data
+    const float *boxes_data = output_tensors[0].GetTensorData<float>();
+    const float *scores_data = output_tensors[1].GetTensorData<float>();
+
+    // Convert to Eigen maps for vectorized operations
+    Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, 4, Eigen::RowMajor>>
+      boxes_matrix(boxes_data, num_detections, 4);
+    Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+      scores_matrix(scores_data, num_detections, num_classes);
 
     for(int i = 0; i < num_detections; i++)
     {
-      float x_center = raw_output[i * num_features + 0];
-      float y_center = raw_output[i * num_features + 1];
-      float width = raw_output[i * num_features + 2];
-      float height = raw_output[i * num_features + 3];
-      float confidence = raw_output[i * num_features + 4];
+      // Find the class with max confidence using Eigen
+      Eigen::Index best_class;
+      float max_conf = scores_matrix.row(i).maxCoeff(&best_class);
 
-      if(confidence < conf_threshold)
-        continue; // Ignore low-confidence detections
-
-      // Find the class with the highest probability
-      int class_id = -1;
-      float max_prob = 0.0;
-      for(int j = 5; j < num_features; j++)
+      // Apply confidence threshold
+      if(max_conf >= conf_threshold)
       {
-        if(raw_output[i * num_features + j] > max_prob)
-        {
-          max_prob = raw_output[i * num_features + j];
-          class_id = j - 5; // Class index
-        }
+        BoundingBox bbox;
+        bbox.confidence = max_conf;
+        bbox.label = getObjectClass(static_cast<int>(best_class));
+
+        // Faster bounding box conversion (Vectorized)
+        bbox.x_min = boxes_matrix(i, 0);
+        bbox.y_min = boxes_matrix(i, 1);
+        bbox.x_max = boxes_matrix(i, 2);
+        bbox.y_max = boxes_matrix(i, 3);
+
+        bboxes.push_back(bbox);
       }
-
-      // Get Enum Class
-      ObjectClass label = getObjectClass(class_id);
-
-      // Convert center-based to top-left-based bbox
-      float x = x_center - width / 2.0;
-      float y = y_center - height / 2.0;
-
-      boxes.push_back({x, y, width, height, confidence, label});
     }
 
-    return boxes;
+    // Apply Fast NMS and denormalize the bboxes
+    nms_bboxes = fast_non_max_suppression(bboxes, iou_threshold);
+    denormalizeBoundingBox(nms_bboxes, img_size);
+
+    return nms_bboxes;
+  }
+
+  Eigen::VectorXf computeIoU_Eigen(const BoundingBox &box, const Eigen::MatrixXf &boxes)
+  {
+    Eigen::VectorXf x1 = boxes.col(0).cwiseMax(box.x_min);
+    Eigen::VectorXf y1 = boxes.col(1).cwiseMax(box.y_min);
+    Eigen::VectorXf x2 = boxes.col(2).cwiseMin(box.x_max);
+    Eigen::VectorXf y2 = boxes.col(3).cwiseMin(box.y_max);
+
+    Eigen::VectorXf intersection
+      = ((x2 - x1).cwiseMax(0.0f)).array() * ((y2 - y1).cwiseMax(0.0f)).array();
+
+    Eigen::VectorXf area1
+      = (boxes.col(2) - boxes.col(0)).array() * (boxes.col(3) - boxes.col(1)).array();
+    float area2
+      = (box.x_max - box.x_min) * (box.y_max - box.y_min); // Fixed area calculation
+
+    return intersection.array() / (area1.array() + area2 - intersection.array());
+  }
+  // Fast Non-Maximum Suppression (NMS) using Eigen
+  std::vector<BoundingBox>
+  fast_non_max_suppression(std::vector<BoundingBox> &bboxes, float iou_threshold)
+  {
+    if(bboxes.empty())
+      return {};
+
+    // Sort by confidence (descending)
+    std::sort(bboxes.begin(), bboxes.end(),
+              [](const BoundingBox &a, const BoundingBox &b) {
+                return a.confidence > b.confidence;
+              });
+
+    int num_boxes = static_cast<int>(bboxes.size());
+    Eigen::MatrixXf box_matrix(num_boxes, 4);
+    Eigen::VectorXf confidences(num_boxes);
+    std::vector<bool> keep(num_boxes, true);
+
+    for(int i = 0; i < num_boxes; i++)
+    {
+      box_matrix(i, 0) = bboxes[i].x_min;
+      box_matrix(i, 1) = bboxes[i].y_min;
+      box_matrix(i, 2) = bboxes[i].x_max;
+      box_matrix(i, 3) = bboxes[i].y_max;
+      confidences(i) = bboxes[i].confidence;
+    }
+
+    std::vector<BoundingBox> final_bboxes;
+    for(int i = 0; i < num_boxes; i++)
+    {
+      if(!keep[i])
+        continue;
+      final_bboxes.push_back(bboxes[i]);
+
+      Eigen::VectorXf ious
+        = computeIoU_Eigen(bboxes[i], box_matrix.bottomRows(num_boxes - i - 1));
+      for(int j = 0; j < ious.size(); j++)
+      {
+        if(ious(j) > iou_threshold)
+        {
+          keep[i + j + 1] = false;
+        }
+      }
+    }
+
+    return final_bboxes;
   }
 
   void draw_bboxes(cv::Mat &image, const std::vector<BoundingBox> &bboxes)
   {
     for(const auto &box : bboxes)
     {
-      cv::Rect rect(box.x, box.y, box.width, box.height);
+      cv::Rect rect(box.x_min, box.y_min, box.x_max - box.x_min, box.y_max - box.y_min);
       cv::rectangle(image, rect, cv::Scalar(0, 255, 0), 2);
       std::string label
         = objectClassToString(box.label) + " (" + std::to_string(box.confidence) + ")";
-      cv::putText(image, label, cv::Point(box.x, box.y - 5), cv::FONT_HERSHEY_SIMPLEX,
-                  0.5, cv::Scalar(0, 255, 0), 1);
+      cv::putText(image, label, cv::Point(box.x_min, box.y_min - 5),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+    }
+  }
+
+  void denormalizeBoundingBox(std::vector<BoundingBox> &bboxes, int img_size)
+  {
+    for(auto &box : bboxes)
+    {
+      box.x_min = static_cast<int>(box.x_min * img_size);
+      box.y_min = static_cast<int>(box.y_min * img_size);
+      box.x_max = static_cast<int>(box.x_max * img_size);
+      box.y_max = static_cast<int>(box.y_max * img_size);
     }
   }
 
@@ -205,4 +286,4 @@ namespace object_detection
 
     return "Unknown";
   }
-};
+}

@@ -1,13 +1,12 @@
 #ifndef OBJECT_DETECTION__OBJECT_DETECTION_HPP_
 #define OBJECT_DETECTION__OBJECT_DETECTION_HPP_
 
-#include <cstdint>
+#include <Eigen/Core>
 #include <opencv2/opencv.hpp>
 #include <onnxruntime/onnxruntime_cxx_api.h>
 #include <onnxruntime/core/providers/cuda/cuda_resource.h>
 
 #include <spdlog/spdlog.h>
-#include <sys/types.h>
 
 // Enum for object class labels
 enum class ObjectClass
@@ -27,7 +26,8 @@ enum class ObjectClass
 
 struct BoundingBox
 {
-  float x, y, width, height, confidence;
+  double x_min, y_min, x_max, y_max;
+  float confidence;
   ObjectClass label;
 };
 
@@ -39,13 +39,20 @@ namespace object_detection
   // Convert OpenCV Mat to ONNX tensor format
   std::vector<float> mat_to_tensor(const cv::Mat &);
 
-  std::unique_ptr<Ort::Session>
-  initialize_onnx_runtime(Ort::Env &, Ort::SessionOptions &, const char *);
+  void initialize_onnx_runtime(std::unique_ptr<Ort::Session> &, Ort::Env &,
+                               Ort::SessionOptions &, const char *);
 
   std::vector<Ort::Value>
   run_inference(const std::vector<float> &, const std::unique_ptr<Ort::Session> &);
 
-  std::vector<BoundingBox> extract_bboxes(Ort::Value &, double);
+  std::vector<BoundingBox>
+  extract_bboxes(const std::vector<Ort::Value> &, double, double, int);
+
+  Eigen::VectorXf computeIoU_Eigen(const BoundingBox &, const Eigen::MatrixXf &);
+
+  std::vector<BoundingBox> fast_non_max_suppression(std::vector<BoundingBox> &, float);
+
+  void denormalizeBoundingBox(std::vector<BoundingBox> &, int);
 
   void draw_bboxes(cv::Mat &, const std::vector<BoundingBox> &);
 

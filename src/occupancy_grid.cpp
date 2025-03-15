@@ -7,8 +7,25 @@ OccupancyGridMap::OccupancyGridMap(const std::string &base_link, uint8_t grid_x,
   grid_map_ = grid_map::GridMap({"log_odds", "occupancy"});
   grid_map_.setFrameId(base_link);
   grid_map_.setGeometry(grid_map::Length(grid_x, grid_y), resolution);
+  grid_map_.setPosition(grid_map::Position(grid_x / 4, 0.0));
   grid_map_["log_odds"].setConstant(log_odds_prior_);
   grid_map_["occupancy"].setConstant(init_probability_);
+}
+
+void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map)
+{
+  // Decay all non-occupied cells
+  for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
+  {
+    grid_map.at("log_odds", *it) += log_odds_decay_;
+  }
+  // Convert log-odds to probability
+  for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
+  {
+    float log_odds_value = grid_map.at("log_odds", *it);
+    float probability = 1.0f / (1.0f + std::exp(-log_odds_value));
+    grid_map.at("occupancy", *it) = probability;
+  }
 }
 
 void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
@@ -25,7 +42,7 @@ void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
   for(size_t idx = 0; idx < base_points.size(); ++idx)
   {
     auto base_point = base_points[idx];
-    auto bbox_width = bboxes[idx].width;
+    auto bbox_width = bboxes[idx].x_max - bboxes[idx].x_min;
     auto bbox_label = bboxes[idx].label;
     if(bbox_label == ObjectClass::BIKE || bbox_label == ObjectClass::MOTORBIKE
        || bbox_label == ObjectClass::PERSON || bbox_label == ObjectClass::VEHICLE)

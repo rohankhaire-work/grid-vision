@@ -32,8 +32,11 @@ target_link_libraries(grid_vision
     spdlog::spdlog_header_only
     Eigen3::Eigen)
 
+install(TARGETS grid_vision
+  DESTINATION lib/${PROJECT_NAME})
+
 install(
-  DIRECTORY config
+  DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
 )
 
