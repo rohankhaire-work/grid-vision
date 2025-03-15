@@ -39,8 +39,8 @@ private:
   double conf_threshold_;
   double iou_threshold_;
   uint16_t resize_;
-  double fx_, fy_;
-  uint16_t cx_, cy_, k_near_;
+  double fx_, fy_, cx_, cy_;
+  uint16_t k_near_;
   uint8_t grid_x_, grid_y_;
   double resolution_;
 

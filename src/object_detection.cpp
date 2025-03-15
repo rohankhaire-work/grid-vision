@@ -60,7 +60,7 @@ namespace object_detection
     }
   }
 
-  // **3️⃣ Run Inference on Preprocessed Image**
+  // Run Inference on Preprocessed Image
   std::vector<Ort::Value> run_inference(const std::vector<float> &image_tensor,
                                         const std::unique_ptr<Ort::Session> &session)
   {
