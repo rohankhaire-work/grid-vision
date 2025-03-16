@@ -22,13 +22,15 @@ public:
 
 private:
   float log_odds_free_ = -0.4f;
-  float log_odds_occupied_ = 0.85f;
+  float log_odds_occupied_ = 1.2f;
   float log_odds_prior_ = 0.0f;
   float init_probability_ = 0.5f;
-  float log_odds_decay_ = -0.05f;
+  float log_odds_decay_ = -0.2f;
+  float min_log_odds_ = -2.0f; // Limits how "free" a cell can be
+  float max_log_odds_ = 3.6f;  // Limits how "occupied" a cell can be
 
   std::array<geometry_msgs::msg::Point, 4>
-  computeBoundingBox3D(const geometry_msgs::msg::Point &, float, ObjectClass);
+  computeBoundingBox3D(const geometry_msgs::msg::Point &, ObjectClass);
 
   void updateGridCellsFast(grid_map::GridMap &,
                            const std::array<geometry_msgs::msg::Point, 4> &);

@@ -49,7 +49,7 @@ private:
   // Variables
   cv::Mat init_image_;
   cv_bridge::CvImagePtr init_image_ptr_;
-  cv::Mat intrinsic_mat_;
+  Eigen::Matrix3d intrinsic_mat_;
   sensor_msgs::msg::PointCloud2 init_cloud_;
   pcl::PointCloud<pcl::PointXYZI> cloud_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -87,7 +87,7 @@ private:
 
   std::vector<geometry_msgs::msg::Point>
   convertPixelsTo3D(const std::vector<BoundingBox> &, const std::vector<float> &,
-                    const cv::Mat &);
+                    const Eigen::Matrix3d &);
 };
 
 #endif // GRID_VISION_NODE__GRID_VISION_NODE_HPP_

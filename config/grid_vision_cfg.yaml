@@ -2,12 +2,12 @@
   ros__parameters:
     image_topic: "/carla/hero/front/image"   # Image topic to subscribe to
     lidar_topic: "/carla/hero/lidar"
-    weights_file: "/home/grid-vision-ws/src/grid-vision/weights/yolov4_1_3_416_416_static.onnx"  # Path to ONNX weights file
+    weights_file: "/home/grid-vision-ws/src/grid-vision/weights/yolov4_3l_416_416.onnx"  # Path to ONNX weights file
     lidar_frame: "hero/lidar"
     camera_frame: "hero/front"
     base_frame: "hero"
-    confidence_threshold: 0.25  # Confidence threshold for detections
-    iou_threshold: 0.2  # IoU threshold for filtering overlapping boxes
+    confidence_threshold: 0.6  # Confidence threshold for detections
+    iou_threshold: 0.6  # IoU threshold for filtering overlapping boxes
     fx: 320.0 
     fy: 320.0
     cx: 320.0

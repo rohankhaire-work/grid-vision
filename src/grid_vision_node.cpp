@@ -1,6 +1,5 @@
 #include "grid_vision/grid_vision_node.hpp"
-#include <image_transport/image_transport.hpp>
-#include <pcl/impl/point_types.hpp>
+#include <Eigen/src/Core/Matrix.h>
 
 GridVision::GridVision() : Node("grid_vision_node")
 {
@@ -117,10 +116,8 @@ void GridVision::timerCallback()
     = object_detection::run_inference(input_tensor, session_);
 
   // Extract Bboxes
-  std::vector<BoundingBox> bboxes
-    = object_detection::extract_bboxes(output, conf_threshold_, iou_threshold_, resize_);
-
-  RCLCPP_INFO(this->get_logger(), "EXTRACTED BBOXES: %li", bboxes.size());
+  std::vector<BoundingBox> bboxes = object_detection::extract_bboxes(
+    output, conf_threshold_, iou_threshold_, init_image_.cols, init_image_.rows, resize_);
 
   // If bboxes are empty then nothing to do
   if(bboxes.empty())
@@ -142,7 +139,7 @@ void GridVision::timerCallback()
     kdtree, image_points, bboxes, k_near_);
 
   // Kinverse
-  cv::Mat K_inv = object_detection::computeKInverse(intrinsic_mat_);
+  Eigen::Matrix3d K_inv = object_detection::computeKInverse(intrinsic_mat_);
 
   // Get the 3D co-ordinates of 2D detection in base frame
   std::vector<geometry_msgs::msg::Point> cam_points
@@ -160,19 +157,16 @@ void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
                                          std::vector<BoundingBox> &bboxes, cv::Mat &image,
                                          int resize)
 {
-  cv::Mat bbox_resize;
-
-  // Resize to model input size
-  cv::resize(image, bbox_resize, cv::Size(resize, resize));
+  cv::Mat bbox_img = image.clone();
 
   // Draw Bboxes
-  object_detection::draw_bboxes(bbox_resize, bboxes);
+  object_detection::draw_bboxes(bbox_img, bboxes);
 
   // Convert OpenCV image to ROS2 message
   std_msgs::msg::Header header;
   header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
   sensor_msgs::msg::Image::SharedPtr msg
-    = cv_bridge::CvImage(header, "rgb8", bbox_resize).toImageMsg();
+    = cv_bridge::CvImage(header, "rgb8", bbox_img).toImageMsg();
 
   // Publish image
   pub.publish(*msg);
@@ -224,15 +218,17 @@ GridVision::transformLidarToCamera(const pcl::PointCloud<pcl::PointXYZI> &lidar_
 
 std::vector<geometry_msgs::msg::Point>
 GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
-                              const std::vector<float> &depths, const cv::Mat &K_inv)
+                              const std::vector<float> &depths,
+                              const Eigen::Matrix3d &K_inv)
 {
   std::vector<geometry_msgs::msg::Point> point_vec;
 
   for(size_t i = 0; i < bboxes.size(); ++i)
   {
     // Compute the pixel center
-    cv::Point2f pixel_center((bboxes[i].x_max - bboxes[i].x_min) / 2.0f,
-                             (bboxes[i].y_max - bboxes[i].y_min) / 2.0f);
+    cv::Point2f pixel_center(
+      bboxes[i].x_min + ((bboxes[i].x_max - bboxes[i].x_min) / 2.0f),
+      bboxes[i].y_min + ((bboxes[i].y_max - bboxes[i].y_min) / 2.0f));
 
     // Convert to 3D point in camera frame
     geometry_msgs::msg::Point cam_point

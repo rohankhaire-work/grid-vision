@@ -1,7 +1,7 @@
 #ifndef OBJECT_DETECTION__OBJECT_DETECTION_HPP_
 #define OBJECT_DETECTION__OBJECT_DETECTION_HPP_
 
-#include <Eigen/Core>
+#include <Eigen/Dense>
 #include <opencv2/opencv.hpp>
 #include <onnxruntime/onnxruntime_cxx_api.h>
 #include <onnxruntime/core/providers/cuda/cuda_resource.h>
@@ -46,19 +46,19 @@ namespace object_detection
   run_inference(const std::vector<float> &, const std::unique_ptr<Ort::Session> &);
 
   std::vector<BoundingBox>
-  extract_bboxes(const std::vector<Ort::Value> &, double, double, int);
+  extract_bboxes(const std::vector<Ort::Value> &, double, double, int, int, int);
 
   Eigen::VectorXf computeIoU_Eigen(const BoundingBox &, const Eigen::MatrixXf &);
 
   std::vector<BoundingBox> fast_non_max_suppression(std::vector<BoundingBox> &, float);
 
-  void denormalizeBoundingBox(std::vector<BoundingBox> &, int);
+  void denormalizeAndScaleBoundingBox(std::vector<BoundingBox> &, int, int, int);
 
   void draw_bboxes(cv::Mat &, const std::vector<BoundingBox> &);
 
-  cv::Mat setIntrinsicMatrix(double, double, double, double);
+  Eigen::Matrix3d setIntrinsicMatrix(double, double, double, double);
 
-  cv::Mat computeKInverse(const cv::Mat &);
+  Eigen::Matrix3d computeKInverse(const Eigen::Matrix3d &);
 
   ObjectClass getObjectClass(int);
 

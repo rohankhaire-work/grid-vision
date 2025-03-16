@@ -1,5 +1,5 @@
 #include "grid_vision/object_detection.hpp"
-#include <cstdint>
+#include <Eigen/src/Core/Matrix.h>
 
 namespace object_detection
 {
@@ -93,7 +93,7 @@ namespace object_detection
   // Optimized extraction using Eigen for vectorization
   std::vector<BoundingBox>
   extract_bboxes(const std::vector<Ort::Value> &output_tensors, double conf_threshold,
-                 double iou_threshold, int img_size)
+                 double iou_threshold, int orig_w, int orig_h, int resize)
   {
     std::vector<BoundingBox> bboxes;
     std::vector<BoundingBox> nms_bboxes;
@@ -140,7 +140,7 @@ namespace object_detection
 
     // Apply Fast NMS and denormalize the bboxes
     nms_bboxes = fast_non_max_suppression(bboxes, iou_threshold);
-    denormalizeBoundingBox(nms_bboxes, img_size);
+    denormalizeAndScaleBoundingBox(nms_bboxes, orig_w, orig_h, resize);
 
     return nms_bboxes;
   }
@@ -223,29 +223,30 @@ namespace object_detection
     }
   }
 
-  void denormalizeBoundingBox(std::vector<BoundingBox> &bboxes, int img_size)
+  void denormalizeAndScaleBoundingBox(std::vector<BoundingBox> &bboxes, int orig_w,
+                                      int orig_h, int resize)
   {
+    float scale_x = static_cast<float>(orig_w) / resize;
+    float scale_y = static_cast<float>(orig_h) / resize;
+
     for(auto &box : bboxes)
     {
-      box.x_min = static_cast<int>(box.x_min * img_size);
-      box.y_min = static_cast<int>(box.y_min * img_size);
-      box.x_max = static_cast<int>(box.x_max * img_size);
-      box.y_max = static_cast<int>(box.y_max * img_size);
+      box.x_min = static_cast<int>(box.x_min * resize * scale_x);
+      box.y_min = static_cast<int>(box.y_min * resize * scale_y);
+      box.x_max = static_cast<int>(box.x_max * resize * scale_x);
+      box.y_max = static_cast<int>(box.y_max * resize * scale_y);
     }
   }
 
-  cv::Mat setIntrinsicMatrix(double fx, double fy, double cx, double cy)
+  Eigen::Matrix3d setIntrinsicMatrix(double fx, double fy, double cx, double cy)
   {
-    cv::Mat K = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, cy, 0, 0, 1);
+    Eigen::Matrix3d K;
+    K << fx, 0, cx, 0, fy, cy, 0, 0, 1;
+
     return K;
   }
 
-  cv::Mat computeKInverse(const cv::Mat &K)
-  {
-    cv::Mat K_inv;
-    cv::invert(K, K_inv, cv::DECOMP_LU); // Compute the inverse using LU decomposition
-    return K_inv;
-  }
+  Eigen::Matrix3d computeKInverse(const Eigen::Matrix3d &K) { return K.inverse(); }
 
   // Function to convert an integer label to ObjectClass enum
   ObjectClass getObjectClass(int label)

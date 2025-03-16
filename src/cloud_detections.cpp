@@ -1,26 +1,26 @@
 #include "grid_vision/cloud_detections.hpp"
+#include <Eigen/src/Core/Matrix.h>
 #include <geometry_msgs/msg/detail/point__struct.hpp>
 
 namespace cloud_detections
 {
-  void
-  buildKDTree(pcl::KdTreeFLANN<pcl::PointXYZ> &kdtree,
-              pcl::PointCloud<pcl::PointXYZ>::Ptr image_points,
-              const pcl::PointCloud<pcl::PointXYZI>::Ptr lidar_points, const cv::Mat &K)
+  void buildKDTree(pcl::KdTreeFLANN<pcl::PointXYZ> &kdtree,
+                   pcl::PointCloud<pcl::PointXYZ>::Ptr image_points,
+                   const pcl::PointCloud<pcl::PointXYZI>::Ptr lidar_points,
+                   const Eigen::Matrix3d &K)
   {
     for(const auto &p : lidar_points->points)
     {
       // Ignore points behind the camera
-      if(p.x <= 0)
+      if(p.z <= 0)
         continue;
-
       // Convert to homogeneous coordinates
-      cv::Mat cam_point = (cv::Mat_<double>(3, 1) << p.x, p.y, p.z);
-      cv::Mat img_point = K * cam_point; // K * [X Y Z]^T
+      Eigen::Vector3d cam_point(p.x, p.y, p.z);
+      Eigen::Vector3d img_point = K * cam_point; // K * [X Y Z]^T
 
       // Normalize to get pixel coordinates
-      float u = img_point.at<double>(0, 0) / img_point.at<double>(2, 0);
-      float v = img_point.at<double>(1, 0) / img_point.at<double>(2, 0);
+      float u = img_point.x() / img_point.z();
+      float v = img_point.y() / img_point.z();
 
       // Store in pcl::PointXYZ (u → x, v → y, depth → z)
       pcl::PointXYZ pt;
@@ -53,8 +53,8 @@ namespace cloud_detections
 
       // Compute bounding box center
       pcl::PointXYZ search_point;
-      search_point.x = (bbox.x_max - bbox.x_min) / 2.0f;
-      search_point.y = (bbox.y_max - bbox.y_min) / 2.0f;
+      search_point.x = bbox.x_min + ((bbox.x_max - bbox.x_min) / 2.0f);
+      search_point.y = bbox.y_min + ((bbox.y_max - bbox.y_min) / 2.0f);
       search_point.z = 0.0f;
 
       std::vector<int> point_indices(k);
@@ -86,17 +86,17 @@ namespace cloud_detections
   }
 
   geometry_msgs::msg::Point
-  pixelTo3D(const cv::Point2f &pixel, float depth, const cv::Mat &K_inv)
+  pixelTo3D(const cv::Point2f &pixel, float depth, const Eigen::Matrix3d &K_inv)
   {
     // Convert pixel coordinates to homogeneous coordinates
-    cv::Mat pixel_homogeneous = (cv::Mat_<double>(3, 1) << pixel.x, pixel.y, 1.0);
+    Eigen::Vector3d pixel_homogeneous(pixel.x, pixel.y, 1.0);
     // Compute the 3D point in camera frame: X_cam = K_inv * (u, v, 1) * depth
-    cv::Mat cam_point_mat = K_inv * pixel_homogeneous * depth;
+    Eigen::Vector3d point_3D = depth * (K_inv * pixel_homogeneous);
 
     geometry_msgs::msg::Point cam_point;
-    cam_point.x = cam_point_mat.at<float>(0, 0);
-    cam_point.y = cam_point_mat.at<float>(1, 0);
-    cam_point.z = cam_point_mat.at<float>(2, 0);
+    cam_point.x = point_3D.x();
+    cam_point.y = point_3D.y();
+    cam_point.z = point_3D.z();
 
     return cam_point;
   }

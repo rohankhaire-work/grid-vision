@@ -7,18 +7,19 @@ OccupancyGridMap::OccupancyGridMap(const std::string &base_link, uint8_t grid_x,
   grid_map_ = grid_map::GridMap({"log_odds", "occupancy"});
   grid_map_.setFrameId(base_link);
   grid_map_.setGeometry(grid_map::Length(grid_x, grid_y), resolution);
-  grid_map_.setPosition(grid_map::Position(grid_x / 4, 0.0));
+  grid_map_.setPosition(grid_map::Position(grid_x / 3, 0.0));
   grid_map_["log_odds"].setConstant(log_odds_prior_);
   grid_map_["occupancy"].setConstant(init_probability_);
 }
 
 void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map)
 {
-  // Decay all non-occupied cells
-  for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
-  {
-    grid_map.at("log_odds", *it) += log_odds_decay_;
-  }
+  // Decay all cells
+  grid_map["log_odds"].array() += log_odds_decay_;
+
+  grid_map["log_odds"]
+    = grid_map["log_odds"].cwiseMax(min_log_odds_).cwiseMin(max_log_odds_);
+
   // Convert log-odds to probability
   for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
   {
@@ -32,11 +33,8 @@ void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
                                  const std::vector<geometry_msgs::msg::Point> &base_points,
                                  const std::vector<BoundingBox> &bboxes)
 {
-  // Decay all non-occupied cells
-  for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
-  {
-    grid_map.at("log_odds", *it) += log_odds_decay_;
-  }
+  // Decay all cells
+  grid_map["log_odds"].array() += log_odds_decay_;
 
   // Process detected objects & update occupied cells
   for(size_t idx = 0; idx < base_points.size(); ++idx)
@@ -49,12 +47,14 @@ void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
     {
       // Compute the Rectangel from center point
       std::array<geometry_msgs::msg::Point, 4> occ_corners
-        = computeBoundingBox3D(base_point, bbox_width, bbox_label);
+        = computeBoundingBox3D(base_point, bbox_label);
 
       // Update the grid cells in the map
       updateGridCellsFast(grid_map, occ_corners);
     }
   }
+  grid_map["log_odds"]
+    = grid_map["log_odds"].cwiseMax(min_log_odds_).cwiseMin(max_log_odds_);
   // Convert log-odds to probability
   for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
   {
@@ -66,7 +66,7 @@ void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
 
 std::array<geometry_msgs::msg::Point, 4>
 OccupancyGridMap::computeBoundingBox3D(const geometry_msgs::msg::Point &base_center,
-                                       float bbox_width, ObjectClass label)
+                                       ObjectClass label)
 {
   std::array<geometry_msgs::msg::Point, 4> corners;
 
@@ -76,22 +76,22 @@ OccupancyGridMap::computeBoundingBox3D(const geometry_msgs::msg::Point &base_cen
 
   // Left-Front
   corners[0].x = base_center.x + estimated_depth;
-  corners[0].y = base_center.y;
+  corners[0].y = base_center.y + (estimated_depth / 2);
   corners[0].z = base_center.z;
 
   // Right-Front
   corners[1].x = base_center.x + estimated_depth;
-  corners[1].y = base_center.y + bbox_width;
+  corners[1].y = base_center.y - (estimated_depth / 2);
   corners[1].z = base_center.z;
 
   // Right-Back (At base center)
   corners[2].x = base_center.x;
-  corners[2].y = base_center.y + bbox_width;
+  corners[2].y = base_center.y - (estimated_depth / 2);
   corners[2].z = base_center.z;
 
   // Left-Back (At base center)
   corners[3].x = base_center.x;
-  corners[3].y = base_center.y;
+  corners[3].y = base_center.y + (estimated_depth / 2);
   corners[3].z = base_center.z;
 
   return corners;
