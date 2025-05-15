@@ -1,18 +1,20 @@
 #include "grid_vision/grid_vision_node.hpp"
-#include <Eigen/src/Core/Matrix.h>
 
 GridVision::GridVision() : Node("grid_vision_node")
 {
   // Set parameters
   image_topic_ = declare_parameter<std::string>("image_topic", "");
   lidar_topic_ = declare_parameter<std::string>("lidar_topic", "");
-  weight_file_ = declare_parameter<std::string>("weights_file", "");
+  det_weight_file_ = declare_parameter<std::string>("detection_weights_file", "");
+  det_weight_file_ = declare_parameter<std::string>("depth_weights_file", "");
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", "");
   camera_frame_ = declare_parameter<std::string>("camera_frame", "");
   base_frame_ = declare_parameter<std::string>("base_frame", "");
   conf_threshold_ = declare_parameter("confidence_threshold", 0.5);
   iou_threshold_ = declare_parameter("iou_threshold", 0.4);
   resize_ = declare_parameter("network_input_size", 416);
+  depth_input_h_ = declare_parameter("depth_input_height", 192);
+  depth_input_w_ = declare_parameter("depth_input_width", 640);
   fx_ = declare_parameter("fx", 0.0);
   fy_ = declare_parameter("fy", 0.0);
   cx_ = declare_parameter("cx", 0.0);
@@ -21,11 +23,12 @@ GridVision::GridVision() : Node("grid_vision_node")
   grid_x_ = declare_parameter("grid_x", 50);
   grid_y_ = declare_parameter("grid_y", 10);
   resolution_ = declare_parameter("resolution", 0.1);
+  camera_only_ = declare_parameter("camera_only", false);
 
   // Initialize occupancy grid
   occ_grid_ = OccupancyGridMap(base_frame_, grid_x_, grid_y_, resolution_);
 
-  if(image_topic_.empty() || weight_file_.empty() || lidar_topic_.empty())
+  if(image_topic_.empty() || det_weight_file_.empty() || lidar_topic_.empty())
   {
     RCLCPP_ERROR(get_logger(), "Check if topic name or weight file is assigned");
     return;
@@ -43,9 +46,12 @@ GridVision::GridVision() : Node("grid_vision_node")
   detection_pub_ = image_transport::create_publisher(this, "carla/front/detections");
   occupancy_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("occupancy_grid", 10);
 
-  // Initialize ONNX runtim
+  // Initialize ONNX runtime
   object_detection::initialize_onnx_runtime(session_, env_, session_options_,
-                                            weight_file_.c_str());
+                                            det_weight_file_.c_str());
+
+  // Initialize TensorRT and depthEstimation class
+  monodepth_ = MonoDepthEstimation(depth_input_h_, depth_input_w_, depth_weight_file_);
 
   // Initialize tf2 for transforms
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -53,6 +59,8 @@ GridVision::GridVision() : Node("grid_vision_node")
 
   // Set Intrinsic Matrix
   intrinsic_mat_ = object_detection::setIntrinsicMatrix(fx_, fy_, cx_, cy_);
+  // Get Intrinsic Matrix Inverse
+  K_inv_ = object_detection::computeKInverse(intrinsic_mat_);
 }
 
 void GridVision::imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr &msg)
@@ -138,12 +146,9 @@ void GridVision::timerCallback()
   std::vector<float> depth = cloud_detections::computeDepthForBoundingBoxes(
     kdtree, image_points, bboxes, k_near_);
 
-  // Kinverse
-  Eigen::Matrix3d K_inv = object_detection::computeKInverse(intrinsic_mat_);
-
   // Get the 3D co-ordinates of 2D detection in base frame
   std::vector<geometry_msgs::msg::Point> cam_points
-    = convertPixelsTo3D(bboxes, depth, K_inv);
+    = convertPixelsTo3D(bboxes, depth, K_inv_);
 
   // Update the occupancy grid map
   occ_grid_->updateMap(occ_grid_->grid_map_, cam_points, bboxes);

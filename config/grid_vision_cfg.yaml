@@ -2,7 +2,8 @@
   ros__parameters:
     image_topic: "/carla/hero/front/image"   # Image topic to subscribe to
     lidar_topic: "/carla/hero/lidar"
-    weights_file: "/home/grid-vision-ws/src/grid-vision/weights/yolov4_3l_416_416.onnx"  # Path to ONNX weights file
+    detection_weights_file: "weights/yolov4_3l_416_416.onnx"  # Path to ONNX weights file
+    depth_weights_file: "weights/rt_monodepth_full.engine" # Path to depth estimation file
     lidar_frame: "hero/lidar"
     camera_frame: "hero/front"
     base_frame: "hero"
@@ -16,3 +17,4 @@
     grid_x: 50
     grid_y: 20
     resolution: 0.1
+    camera_only: False

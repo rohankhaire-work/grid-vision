@@ -4,13 +4,12 @@
 #include "grid_vision/object_detection.hpp"
 #include "grid_vision/cloud_detections.hpp"
 #include "grid_vision/occupancy_grid.hpp"
+#include "grid_vision/depth_estimation.hpp"
 
 #include <cv_bridge/cv_bridge.h>
-#include <opencv2/core/hal/interface.h>
 #include <optional>
 #include <pcl/impl/point_types.hpp>
 #include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/detail/point_cloud2__struct.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
@@ -34,27 +33,32 @@ private:
   // Params
   std::string image_topic_;
   std::string lidar_topic_;
-  std::string weight_file_;
+  std::string det_weight_file_;
+  std::string depth_weight_file_;
   std::string lidar_frame_;
   std::string camera_frame_;
   std::string base_frame_;
   double conf_threshold_;
   double iou_threshold_;
   uint16_t resize_;
+  int depth_input_h_, depth_input_w_;
   double fx_, fy_, cx_, cy_;
   uint16_t k_near_;
   uint8_t grid_x_, grid_y_;
   double resolution_;
+  bool camera_only_;
 
   // Variables
   cv::Mat init_image_;
   cv_bridge::CvImagePtr init_image_ptr_;
   Eigen::Matrix3d intrinsic_mat_;
+  Eigen::Matrix3d K_inv_;
   sensor_msgs::msg::PointCloud2 init_cloud_;
   pcl::PointCloud<pcl::PointXYZI> cloud_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::optional<OccupancyGridMap> occ_grid_;
+  std::optional<MonoDepthEstimation> monodepth_;
 
   // ONNX
   std::unique_ptr<Ort::Session> session_;
