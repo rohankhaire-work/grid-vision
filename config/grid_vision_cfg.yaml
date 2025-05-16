@@ -7,6 +7,8 @@
     lidar_frame: "hero/lidar"
     camera_frame: "hero/front"
     base_frame: "hero"
+    camera_image_height: 640
+    camera_image_width: 640
     confidence_threshold: 0.6  # Confidence threshold for detections
     iou_threshold: 0.6  # IoU threshold for filtering overlapping boxes
     fx: 320.0 

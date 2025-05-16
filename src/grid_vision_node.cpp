@@ -6,20 +6,23 @@ GridVision::GridVision() : Node("grid_vision_node")
   image_topic_ = declare_parameter<std::string>("image_topic", "");
   lidar_topic_ = declare_parameter<std::string>("lidar_topic", "");
   det_weight_file_ = declare_parameter<std::string>("detection_weights_file", "");
-  det_weight_file_ = declare_parameter<std::string>("depth_weights_file", "");
+  depth_weight_file_ = declare_parameter<std::string>("depth_weights_file", "");
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", "");
   camera_frame_ = declare_parameter<std::string>("camera_frame", "");
   base_frame_ = declare_parameter<std::string>("base_frame", "");
   conf_threshold_ = declare_parameter("confidence_threshold", 0.5);
   iou_threshold_ = declare_parameter("iou_threshold", 0.4);
-  resize_ = declare_parameter("network_input_size", 416);
-  depth_input_h_ = declare_parameter("depth_input_height", 192);
-  depth_input_w_ = declare_parameter("depth_input_width", 640);
+  resize_ = declare_parameter("detection_network_input_size", 416);
+  depth_input_h_ = declare_parameter("depth_network_height", 192);
+  depth_input_w_ = declare_parameter("depth_network_width", 640);
+  cam_height_ = declare_parameter("camera_image_height", 480);
+  cam_width_ = declare_parameter("camera_image_width", 640);
   fx_ = declare_parameter("fx", 0.0);
   fy_ = declare_parameter("fy", 0.0);
   cx_ = declare_parameter("cx", 0.0);
   cy_ = declare_parameter("cy", 0.0);
   k_near_ = declare_parameter("k_near", 10);
+  patch_size_ = declare_parameter("patch_size", 5);
   grid_x_ = declare_parameter("grid_x", 50);
   grid_y_ = declare_parameter("grid_y", 10);
   resolution_ = declare_parameter("resolution", 0.1);
@@ -44,6 +47,7 @@ GridVision::GridVision() : Node("grid_vision_node")
                                    std::bind(&GridVision::timerCallback, this));
 
   detection_pub_ = image_transport::create_publisher(this, "carla/front/detections");
+  depth_img_pub_ = image_transport::create_publisher(this, "carla/front/depth_image");
   occupancy_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("occupancy_grid", 10);
 
   // Initialize ONNX runtime
@@ -51,7 +55,8 @@ GridVision::GridVision() : Node("grid_vision_node")
                                             det_weight_file_.c_str());
 
   // Initialize TensorRT and depthEstimation class
-  monodepth_ = MonoDepthEstimation(depth_input_h_, depth_input_w_, depth_weight_file_);
+  monodepth_ = MonoDepthEstimation(depth_input_h_, depth_input_w_, cam_height_,
+                                   cam_width_, patch_size_, depth_weight_file_);
 
   // Initialize tf2 for transforms
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -136,25 +141,34 @@ void GridVision::timerCallback()
     return;
   }
 
-  // Build KDTree for storing transformed point (3d to 2d pixel)
-  pcl::PointCloud<pcl::PointXYZ>::Ptr image_points(new pcl::PointCloud<pcl::PointXYZ>());
-  pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
-  cloud_detections::buildKDTree(kdtree, image_points, transformed_cloud, intrinsic_mat_);
+  if(!camera_only_) // use LIDAR
+  {
+    // Build KDTree for storing transformed point (3d to 2d pixel)
+    pcl::PointCloud<pcl::PointXYZ>::Ptr image_points(
+      new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+    cloud_detections::buildKDTree(kdtree, image_points, transformed_cloud,
+                                  intrinsic_mat_);
 
-  // Get depth of 2D detections from kdtree
-  // depth size = size of bboxes
-  std::vector<float> depth = cloud_detections::computeDepthForBoundingBoxes(
-    kdtree, image_points, bboxes, k_near_);
+    // Get depth of 2D detections from kdtree
+    // depth size = size of bboxes
+    depth_vec_ = cloud_detections::computeDepthForBoundingBoxes(kdtree, image_points,
+                                                                bboxes, k_near_);
+  }
+  else // use monocular depth estimation
+  {
+    depth_vec_ = monodepth_->runInference(init_image_, bboxes);
+  }
 
   // Get the 3D co-ordinates of 2D detection in base frame
   std::vector<geometry_msgs::msg::Point> cam_points
-    = convertPixelsTo3D(bboxes, depth, K_inv_);
-
+    = convertPixelsTo3D(bboxes, depth_vec_, K_inv_);
   // Update the occupancy grid map
   occ_grid_->updateMap(occ_grid_->grid_map_, cam_points, bboxes);
 
   // Publish 2D detections and Occupancy grid
   publishObjectDetections(detection_pub_, bboxes, init_image_, resize_);
+  publishDepthImage(depth_img_pub_);
   publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
 }
 
@@ -172,6 +186,19 @@ void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
   header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
   sensor_msgs::msg::Image::SharedPtr msg
     = cv_bridge::CvImage(header, "rgb8", bbox_img).toImageMsg();
+
+  // Publish image
+  pub.publish(*msg);
+}
+
+void GridVision::publishDepthImage(const image_transport::Publisher &pub)
+{
+  cv::Mat bbox_img = monodepth_->depth_img_;
+  // Convert OpenCV image to ROS2 message
+  std_msgs::msg::Header header;
+  header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+  sensor_msgs::msg::Image::SharedPtr msg
+    = cv_bridge::CvImage(header, "mono8", bbox_img).toImageMsg();
 
   // Publish image
   pub.publish(*msg);
@@ -230,14 +257,21 @@ GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
 
   for(size_t i = 0; i < bboxes.size(); ++i)
   {
+    geometry_msgs::msg::Point cam_point;
     // Compute the pixel center
     cv::Point2f pixel_center(
       bboxes[i].x_min + ((bboxes[i].x_max - bboxes[i].x_min) / 2.0f),
       bboxes[i].y_min + ((bboxes[i].y_max - bboxes[i].y_min) / 2.0f));
 
-    // Convert to 3D point in camera frame
-    geometry_msgs::msg::Point cam_point
-      = cloud_detections::pixelTo3D(pixel_center, depths[i], K_inv);
+    if(!camera_only_)
+    {
+      // Convert to 3D point in camera frame
+      cam_point = cloud_detections::pixelTo3D(pixel_center, depths[i], K_inv);
+    }
+    else
+    {
+      cam_point = monodepth_->pixelTo3D(pixel_center, depths[i], K_inv);
+    }
 
     // Transform to base frame
     geometry_msgs::msg::Point base_point

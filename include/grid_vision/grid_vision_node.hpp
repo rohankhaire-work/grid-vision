@@ -42,11 +42,13 @@ private:
   double iou_threshold_;
   uint16_t resize_;
   int depth_input_h_, depth_input_w_;
+  int cam_height_, cam_width_;
   double fx_, fy_, cx_, cy_;
   uint16_t k_near_;
   uint8_t grid_x_, grid_y_;
   double resolution_;
   bool camera_only_;
+  int patch_size_;
 
   // Variables
   cv::Mat init_image_;
@@ -59,6 +61,7 @@ private:
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::optional<OccupancyGridMap> occ_grid_;
   std::optional<MonoDepthEstimation> monodepth_;
+  std::vector<float> depth_vec_;
 
   // ONNX
   std::unique_ptr<Ort::Session> session_;
@@ -72,6 +75,7 @@ private:
 
   // Publishers
   image_transport::Publisher detection_pub_;
+  image_transport::Publisher depth_img_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_pub_;
 
   void timerCallback();
@@ -79,6 +83,7 @@ private:
   void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &);
   void publishObjectDetections(const image_transport::Publisher &,
                                std::vector<BoundingBox> &, cv::Mat &, int);
+  void publishDepthImage(const image_transport::Publisher &pub);
   void publishOccupancyGrid(const grid_map::GridMap &grid_map, const std::string &base);
 
   pcl::PointCloud<pcl::PointXYZI>::Ptr
