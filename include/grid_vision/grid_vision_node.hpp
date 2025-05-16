@@ -6,6 +6,7 @@
 #include "grid_vision/occupancy_grid.hpp"
 #include "grid_vision/depth_estimation.hpp"
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <optional>
 #include <pcl/impl/point_types.hpp>

@@ -12,6 +12,7 @@
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include <spdlog/spdlog.h>
 
 class Logger : public nvinfer1::ILogger
 {
@@ -26,7 +27,6 @@ class MonoDepthEstimation
 {
 public:
   MonoDepthEstimation(int, int, int, int, int, const std::string &);
-  ~MonoDepthEstimation();
 
   // Delete copy constructor and assignment
   MonoDepthEstimation(const MonoDepthEstimation &) = delete;
@@ -46,13 +46,12 @@ public:
 private:
   int resize_h_, resize_w_, orig_h_, orig_w_;
   float scale_x_, scale_y_;
-  void *buffers_[2];
-  float *input_host_ = nullptr;
-  float *output_host_ = nullptr;
   cv::Mat depth_map_;
   int patch_size_;
   cudaStream_t stream;
   Logger gLogger;
+  float MAX_DEPTH = 80.0f;
+  std::vector<float> result_;
 
   // Tensorrt
   std::unique_ptr<nvinfer1::IRuntime> runtime;

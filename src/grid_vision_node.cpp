@@ -1,4 +1,5 @@
 #include "grid_vision/grid_vision_node.hpp"
+#include "grid_vision/object_detection.hpp"
 
 GridVision::GridVision() : Node("grid_vision_node")
 {
@@ -50,13 +51,18 @@ GridVision::GridVision() : Node("grid_vision_node")
   depth_img_pub_ = image_transport::create_publisher(this, "carla/front/depth_image");
   occupancy_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("occupancy_grid", 10);
 
+  // Get weight paths
+  std::string share_dir = ament_index_cpp::get_package_share_directory("grid_vision");
+  std::string det_weight_path = share_dir + det_weight_file_;
+  std::string depth_weight_path = share_dir + depth_weight_file_;
+
   // Initialize ONNX runtime
   object_detection::initialize_onnx_runtime(session_, env_, session_options_,
-                                            det_weight_file_.c_str());
+                                            det_weight_path.c_str());
 
   // Initialize TensorRT and depthEstimation class
   monodepth_ = MonoDepthEstimation(depth_input_h_, depth_input_w_, cam_height_,
-                                   cam_width_, patch_size_, depth_weight_file_);
+                                   cam_width_, patch_size_, depth_weight_path);
 
   // Initialize tf2 for transforms
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -100,24 +106,19 @@ void GridVision::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedP
 void GridVision::timerCallback()
 {
   // Check if the image and pointcloud exists
-  if(init_image_.empty() || cloud_.empty())
+  if(init_image_.empty())
   {
-    RCLCPP_WARN(this->get_logger(), "Image or Pointcloud is missing in GridVision");
+    RCLCPP_WARN(this->get_logger(), "Image is missing in GridVision");
     publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
     return;
   }
 
-  // Transform point cloud to camera frame
-  // return if not transformed_cloud
-  pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud
-    = transformLidarToCamera(cloud_, lidar_frame_, camera_frame_);
-
-  if(!transformed_cloud)
+  if(cloud_.empty() && !camera_only_)
   {
+    RCLCPP_WARN(this->get_logger(), "PointCloud is missing in GridVision");
     publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
     return;
   }
-
   // Preprocess the image
   // Convert it to tensors
   cv::Mat preprocessed
@@ -125,24 +126,42 @@ void GridVision::timerCallback()
   std::vector<float> input_tensor = object_detection::mat_to_tensor(preprocessed);
 
   // Perform inference
-  std::vector<Ort::Value> output
-    = object_detection::run_inference(input_tensor, session_);
+  // std::vector<Ort::Value> output
+  //  = object_detection::run_inference(input_tensor, session_);
 
   // Extract Bboxes
-  std::vector<BoundingBox> bboxes = object_detection::extract_bboxes(
-    output, conf_threshold_, iou_threshold_, init_image_.cols, init_image_.rows, resize_);
+  // std::vector<BoundingBox> bboxes = object_detection::extract_bboxes(
+  //  output, conf_threshold_, iou_threshold_, init_image_.cols, init_image_.rows, resize_);
 
   // If bboxes are empty then nothing to do
-  if(bboxes.empty())
-  {
-    // Update the map
-    occ_grid_->updateMap(occ_grid_->grid_map_);
-    publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
-    return;
-  }
-
+  // if(bboxes.empty())
+  //{
+  // Update the map
+  //  occ_grid_->updateMap(occ_grid_->grid_map_);
+  //  publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+  //  return;
+  //}
+  BoundingBox bbox;
+  bbox.confidence = 0.2;
+  bbox.x_max = 200;
+  bbox.y_max = 50;
+  bbox.x_min = 150;
+  bbox.y_min = 25;
+  std::vector<BoundingBox> bboxes;
+  bboxes.emplace_back(bbox);
   if(!camera_only_) // use LIDAR
   {
+    // Transform point cloud to camera frame
+    // return if not transformed_cloud
+    pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud
+      = transformLidarToCamera(cloud_, lidar_frame_, camera_frame_);
+
+    if(!transformed_cloud)
+    {
+      publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+      return;
+    }
+
     // Build KDTree for storing transformed point (3d to 2d pixel)
     pcl::PointCloud<pcl::PointXYZ>::Ptr image_points(
       new pcl::PointCloud<pcl::PointXYZ>());
@@ -157,19 +176,23 @@ void GridVision::timerCallback()
   }
   else // use monocular depth estimation
   {
-    depth_vec_ = monodepth_->runInference(init_image_, bboxes);
+    RCLCPP_ERROR(this->get_logger(), "RUN THE DEPTH ESTIMATION");
+    cv::Mat init_clone = init_image_.clone();
+    depth_vec_ = monodepth_->runInference(init_clone, bboxes);
+    RCLCPP_ERROR(this->get_logger(), "DEPTH ESTIMATION DONE");
   }
 
   // Get the 3D co-ordinates of 2D detection in base frame
-  std::vector<geometry_msgs::msg::Point> cam_points
-    = convertPixelsTo3D(bboxes, depth_vec_, K_inv_);
+  // std::vector<geometry_msgs::msg::Point> cam_points
+  //  = convertPixelsTo3D(bboxes, depth_vec_, K_inv_);
   // Update the occupancy grid map
-  occ_grid_->updateMap(occ_grid_->grid_map_, cam_points, bboxes);
+  // occ_grid_->updateMap(occ_grid_->grid_map_, cam_points, bboxes);
 
   // Publish 2D detections and Occupancy grid
-  publishObjectDetections(detection_pub_, bboxes, init_image_, resize_);
+  // publishObjectDetections(detection_pub_, bboxes, init_image_, resize_);
   publishDepthImage(depth_img_pub_);
-  publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+  // publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+  RCLCPP_ERROR(this->get_logger(), "LOOP COMPLETE");
 }
 
 void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
