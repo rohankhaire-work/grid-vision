@@ -32,6 +32,20 @@ namespace cloud_detections
   geometry_msgs::msg::Point
   pixelTo3D(const cv::Point2f &, float, const Eigen::Matrix3d &);
 
+  pcl::PointCloud<pcl::PointXYZ>
+  segmentGroundPlane(const pcl::PointCloud<pcl::PointXYZ>::Ptr &);
+
+  void bboxPoseEstimation(const std::vector<pcl::PointCloud<pcl::PointXYZ>> &,
+                          std::vector<LShapePose> &);
+
+  void extractCloudPerBBox(const pcl::PointCloud<pcl::PointXYZ> &,
+                           const Eigen::Matrix3d &, const std::vector<BoundingBox> &,
+                           std::vector<pcl::PointCloud<pcl::PointXYZ>> &, int, int);
+
+  std::vector<LShapePose>
+  computeBBoxPose(const pcl::PointCloud<pcl::PointXYZ>::Ptr &, const std::Matrix3d &,
+                  const std::vector<BoundingBox> &, int, int);
+
 }
 
 #endif // CCLOUD_DETECTIONS__CLOUD_DETECTIONS_HPP_

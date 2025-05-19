@@ -19,6 +19,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <memory>
 #include <vector>
@@ -86,13 +87,21 @@ private:
                          const std::string &);
 
   geometry_msgs::msg::Point
-  transformToBaseFrame(const geometry_msgs::msg::Point &, const std::string &,
-                       const std::string &);
+  transformPointToBaseFrame(const geometry_msgs::msg::Point &, const std::string &,
+                            const std::string &);
+  geometry_msgs::msg::Pose
+  GridVision::transformPoseToBaseFrame(const geometry_msgs::msg::Pose &obj_pose,
+                                       const std::string &source,
+                                       const std::string &target)
 
-  std::vector<geometry_msgs::msg::Point>
-  convertPixelsTo3D(const std::vector<BoundingBox> &, const std::vector<float> &,
-                    const Eigen::Matrix3d &);
-  bool RelevantBBoxes(const std::vector<BoundingBox> &);
+    std::vector<geometry_msgs::msg::Point> convertPixelsTo3D(
+      const std::vector<BoundingBox> &, const std::vector<float> &,
+      const Eigen::Matrix3d &);
+
+  std::tuple<std::vector<BoundingBox>, std::vector<BoundingBox>>
+  GridVision::filterBBoxes(const std::vector<BoundingBox> &);
+
+  void transformLShapeObjects(std::vector<LShapePose> &);
 };
 
 #endif // GRID_VISION_NODE__GRID_VISION_NODE_HPP_

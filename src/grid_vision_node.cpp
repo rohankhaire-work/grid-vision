@@ -126,14 +126,18 @@ void GridVision::timerCallback()
     output, conf_threshold_, iou_threshold_, init_image_.cols, init_image_.rows, resize_);
 
   // If bboxes are empty then nothing to do
-  // Only use occ grid if dynamic bboxes are present
-  if(bboxes.empty() || !RelevantBBoxes(bboxes))
+  if(bboxes.empty())
   {
     // Update the map
     occ_grid_->updateMap(occ_grid_->grid_map_);
     publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
     return;
   }
+
+  // Filter bboxes vector for dynamic labels & static labels
+  // dynamic - vehicle, person, bike & motorbike
+  // static - traffic light, traffic sign
+  auto [static_bboxes, dynamic_bboxes] = filterBBoxes(bboxes);
 
   // Transform point cloud to camera frame
   // return if not transformed_cloud
@@ -146,25 +150,46 @@ void GridVision::timerCallback()
     return;
   }
 
-  // Build KDTree for storing transformed point (3d to 2d pixel)
-  pcl::PointCloud<pcl::PointXYZ>::Ptr image_points(new pcl::PointCloud<pcl::PointXYZ>());
-  pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
-  cloud_detections::buildKDTree(kdtree, image_points, transformed_cloud, intrinsic_mat_);
+  // Handle static bboxes
+  std::vector<geometry_msgs::msg::Point> cam_points;
+  if(!static_bboxes.empty())
+  {
+    // Build KDTree for storing transformed point (3d to 2d pixel)
+    pcl::PointCloud<pcl::PointXYZ>::Ptr image_points(
+      new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+    cloud_detections::buildKDTree(kdtree, image_points, transformed_cloud,
+                                  intrinsic_mat_);
 
-  // Get depth of 2D detections from kdtree
-  // depth size = size of bboxes
-  depth_vec_ = cloud_detections::computeDepthForBoundingBoxes(kdtree, image_points,
-                                                              bboxes, k_near_);
+    // Get depth of 2D detections from kdtree
+    // depth size = size of bboxes
+    depth_vec_ = cloud_detections::computeDepthForBoundingBoxes(kdtree, image_points,
+                                                                static_bboxes, k_near_);
 
-  // Get the 3D co-ordinates of 2D detection in base frame
-  std::vector<geometry_msgs::msg::Point> cam_points
-    = convertPixelsTo3D(bboxes, depth_vec_, K_inv_);
-  // Update the occupancy grid map
-  occ_grid_->updateMap(occ_grid_->grid_map_, cam_points, bboxes);
+    // Get the 3D co-ordinates of 2D detection in base frame
+    std::vector<geometry_msgs::msg::Point> cam_points
+      = convertPixelsTo3D(static_bboxes, depth_vec_, K_inv_);
+  }
+
+  // Handle dynamic bboxes
+  std::vector<LShapePose> bboxes_pose;
+  if(!dynamic_bboxes.empty())
+  {
+    // Get the objects 3D pose and orienatation w.r.t
+    // camera co-ordiante frame
+    bboxes_pose = cloud_detections::computeBBoxPose(
+      transformed_cloud, intrinsic_mat_, bboxes, init_image_.rows, init_image_.cols);
+
+    // Transform pose from cam frame to base frame
+    transformLShapeObjects(bboxes_pose);
+  }
 
   // Publish 2D detections and Occupancy grid
   publishObjectDetections(detection_pub_, bboxes, init_image_, resize_);
   publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+
+  // Publish object visualizations
+  publishObjectVisualizations(bboxes_pose, cam_points, static_bboxes, viz_pub_);
 }
 
 void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
@@ -250,7 +275,7 @@ GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
 
     // Transform to base frame
     geometry_msgs::msg::Point base_point
-      = transformToBaseFrame(cam_point, camera_frame_, base_frame_);
+      = transformToPointBaseFrame(cam_point, camera_frame_, base_frame_);
 
     point_vec.emplace_back(base_point);
   }
@@ -259,8 +284,9 @@ GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
 }
 
 geometry_msgs::msg::Point
-GridVision::transformToBaseFrame(const geometry_msgs::msg::Point &cam_point,
-                                 const std::string &source, const std::string &target)
+GridVision::transformPointToBaseFrame(const geometry_msgs::msg::Point &cam_point,
+                                      const std::string &source,
+                                      const std::string &target)
 {
   geometry_msgs::msg::Point base_point;
 
@@ -281,19 +307,172 @@ GridVision::transformToBaseFrame(const geometry_msgs::msg::Point &cam_point,
   return base_point;
 }
 
-bool GridVision::RelevantBBoxes(const std::vector<BoundingBox> &bboxes)
+geometry_msgs::msg::Pose
+GridVision::transformPoseToBaseFrame(const geometry_msgs::msg::Pose &obj_pose,
+                                     const std::string &source, const std::string &target)
 {
-  size_t bboxes_size = bboxes.size();
+  geometry_msgs::msg::Pose base_pose;
+
+  try
+  {
+    // Lookup transform from camera frame to base frame
+    geometry_msgs::msg::TransformStamped transform_stamped
+      = tf_buffer_->lookupTransform(target, source, tf2::TimePointZero);
+
+    // Transform the point
+    tf2::doTransform(obj_pose, base_point, transform_stamped);
+  }
+  catch(tf2::TransformException &ex)
+  {
+    RCLCPP_ERROR(get_logger(), "Transform failed: %s", ex.what());
+  }
+
+  return base_pose;
+}
+
+std::tuple<std::vector<BoundingBox>, std::vector<BoundingBox>>
+GridVision::filterBBoxes(const std::vector<BoundingBox> &bboxes)
+{
+  std::vector<BoundingBox> static_bboxes;
+  std::vector<BoundingBox> dynamic_bboxes;
+
   for(const auto &bbox : bboxes)
   {
-    if(bbox.label != ObjectClass::VEHICLE && bbox.label != ObjectClass::BIKE
-       && bbox.label != ObjectClass::MOTORBIKE && bbox.label != ObjectClass::PERSON)
+    if(bbox.label == ObjectClass::VEHICLE || bbox.label == ObjectClass::BIKE
+       || bbox.label == ObjectClass::MOTORBIKE || bbox.label == ObjectClass::PERSON)
     {
-      bboxes_size -= 1;
+      dynamic_bboxes.emplace_back(bbox);
+    }
+    else
+    {
+      static_bboxes.emplace_back(bbox);
+    }
+  }
+  return std::make_tuple(static_bboxes, dynamic_bboxes);
+}
+
+void GridVision::publishObjectVisualizations(
+  const std::vector<LshapeBox> &lshape_boxes,
+  const std::vector<geometry_msgs::msg::Point> &static_positions,
+  const std::vector<BoundingBox> &static_bbox,
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr &marker_pub)
+{
+  visualization_msgs::msg::MarkerArray marker_array;
+  int id = 0;
+
+  // === Visualize static objects (Traffic Lights and Signs) ===
+  for(size_t i = 0; i < static_positions.size(); ++i)
+  {
+    const auto &pos = static_positions[i];
+
+    // Traffic Lights: Draw colored circle
+    if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_RED
+       || static_bbox.label == ObjectClass::TRAFFIC_LIGHT_ORANGE
+       || static_bbox.label == ObjectClass::TRAFFIC_LIGHT_GREEN)
+    {
+      visualization_msgs::msg::Marker light_marker;
+      light_marker.header.frame_id = "base_link";
+      light_marker.header.stamp = rclcpp::Clock().now();
+      light_marker.ns = "traffic_light";
+      light_marker.id = id++;
+      light_marker.type = visualization_msgs::msg::Marker::SPHERE;
+      light_marker.action = visualization_msgs::msg::Marker::ADD;
+      light_marker.pose.position = pos;
+      light_marker.pose.orientation.w = 1.0;
+      light_marker.scale.x = 0.3;
+      light_marker.scale.y = 0.3;
+      light_marker.scale.z = 0.3;
+
+      light_marker.color.a = 1.0;
+      if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_RED)
+      {
+        light_marker.color.r = 1.0;
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_ORANGE)
+      {
+        light_marker.color.r = 1.0;
+        light_marker.color.g = 1.0;
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_GREEN)
+      {
+        light_marker.color.g = 1.0;
+      }
+
+      marker_array.markers.push_back(light_marker);
+    }
+
+    // Traffic Signs: Draw numbers
+    if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_30
+       || static_bbox.label == ObjectClass::TRAFFIC_SIGN_60
+       || static_bbox.label == ObjectClass::TRAFFIC_SIGN_90i)
+    {
+      visualization_msgs::msg::Marker text_marker;
+      text_marker.header.frame_id = "base_link";
+      text_marker.header.stamp = rclcpp::Clock().now();
+      text_marker.ns = "traffic_sign";
+      text_marker.id = id++;
+      text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      text_marker.action = visualization_msgs::msg::Marker::ADD;
+      text_marker.pose.position = pos;
+      text_marker.pose.position.z += 1.0;
+      text_marker.pose.orientation.w = 1.0;
+
+      text_marker.scale.z = 0.5;
+      text_marker.color.r = 1.0;
+      text_marker.color.g = 1.0;
+      text_marker.color.b = 1.0;
+      text_marker.color.a = 1.0;
+
+      if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_30)
+      {
+        text_marker.text = "SPEED LIMIT: 30 KMPH";
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_60)
+      {
+        text_marker.text = "SPEED LIMIT: 60 KMPH";
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_90)
+      {
+        text_marker.color.g = "SPEED LIMIT: 90 KMPH";
+      }
+
+      marker_array.markers.push_back(text_marker);
     }
   }
 
-  return bbox_size > 0;
+  // === Visualize L-shape 3D Bounding Boxes ===
+  for(const auto &box : lshape_boxes)
+  {
+    visualization_msgs::msg::Marker box_marker;
+    box_marker.header.frame_id = "base_link";
+    box_marker.header.stamp = rclcpp::Clock().now();
+    box_marker.ns = "lshape_bbox";
+    box_marker.id = id++;
+    box_marker.type = visualization_msgs::msg::Marker::CUBE;
+    box_marker.action = visualization_msgs::msg::Marker::ADD;
+
+    box_marker.pose = box.pose;
+    bbox_marker.scale.x = box.length;
+    bbox_marker.scale.y = box.width;
+    bbox_marker.scale.z = 2.0;
+
+    box_marker.color.r = 0.0;
+    box_marker.color.g = 0.5;
+    box_marker.color.b = 1.0;
+    box_marker.color.a = 0.3;
+
+    marker_array.markers.push_back(box_marker);
+  }
+
+  marker_pub->publish(marker_array);
+}
+
+void GridVision::transformLShapeObjects(std::vector<LShapePose> &bboxes_pose)
+{
+  for(auto &lshape : bboxes_pose)
+  {
+    lshape.pose = transformPoseToBaseFrame(lshape.pose, camera_frame_, base_frame_);
+  }
 }
 
 int main(int argc, char *argv[])
