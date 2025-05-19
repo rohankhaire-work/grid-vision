@@ -4,7 +4,6 @@
 #include "grid_vision/object_detection.hpp"
 #include "grid_vision/cloud_detections.hpp"
 #include "grid_vision/occupancy_grid.hpp"
-#include "grid_vision/depth_estimation.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -24,6 +23,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <chrono>
 
 class GridVision : public rclcpp::Node
 {
@@ -35,21 +35,17 @@ private:
   std::string image_topic_;
   std::string lidar_topic_;
   std::string det_weight_file_;
-  std::string depth_weight_file_;
   std::string lidar_frame_;
   std::string camera_frame_;
   std::string base_frame_;
   double conf_threshold_;
   double iou_threshold_;
   uint16_t resize_;
-  int depth_input_h_, depth_input_w_;
   int cam_height_, cam_width_;
   double fx_, fy_, cx_, cy_;
   uint16_t k_near_;
   uint8_t grid_x_, grid_y_;
   double resolution_;
-  bool camera_only_;
-  int patch_size_;
 
   // Variables
   cv::Mat init_image_;
@@ -61,7 +57,6 @@ private:
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::optional<OccupancyGridMap> occ_grid_;
-  std::optional<MonoDepthEstimation> monodepth_;
   std::vector<float> depth_vec_;
 
   // ONNX
@@ -84,7 +79,6 @@ private:
   void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &);
   void publishObjectDetections(const image_transport::Publisher &,
                                std::vector<BoundingBox> &, cv::Mat &, int);
-  void publishDepthImage(const image_transport::Publisher &pub);
   void publishOccupancyGrid(const grid_map::GridMap &grid_map, const std::string &base);
 
   pcl::PointCloud<pcl::PointXYZI>::Ptr

@@ -12,8 +12,6 @@ find_package(rclcpp REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(onnxruntime REQUIRED)
-find_package(TensorRT REQUIRED)
-find_package(CUDAToolkit REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(pcl_ros REQUIRED)
@@ -22,8 +20,8 @@ find_package(grid_map_ros REQUIRED)
 add_executable(grid_vision src/grid_vision_node.cpp
                            src/object_detection.cpp
                            src/cloud_detections.cpp
-                           src/occupancy_grid.cpp
-                           src/depth_estimation.cpp)
+                           src/occupancy_grid.cpp)
+
 target_include_directories(grid_vision PRIVATE include
                                             ${onnxruntime_INCLUDE_DIRS}/onnxruntime
                                             ${OpenCV_INCLUDE_DIRS}
@@ -38,9 +36,7 @@ target_link_libraries(grid_vision
     ${OpenCV_LIBS}
     ${PCL_LIBRARIES}
     spdlog::spdlog_header_only
-    Eigen3::Eigen
-    ${CUDAToolkit_LIBRARY_DIR}/libcudart.so
-    ${TensorRT_LIBRARY_DIRS}/libnvinfer.so)
+    Eigen3::Eigen)
 
 install(TARGETS grid_vision
   DESTINATION lib/${PROJECT_NAME})
