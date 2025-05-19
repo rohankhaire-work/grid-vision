@@ -126,7 +126,8 @@ void GridVision::timerCallback()
     output, conf_threshold_, iou_threshold_, init_image_.cols, init_image_.rows, resize_);
 
   // If bboxes are empty then nothing to do
-  if(bboxes.empty())
+  // Only use occ grid if dynamic bboxes are present
+  if(bboxes.empty() || !RelevantBBoxes(bboxes))
   {
     // Update the map
     occ_grid_->updateMap(occ_grid_->grid_map_);
@@ -278,6 +279,21 @@ GridVision::transformToBaseFrame(const geometry_msgs::msg::Point &cam_point,
   }
 
   return base_point;
+}
+
+bool GridVision::RelevantBBoxes(const std::vector<BoundingBox> &bboxes)
+{
+  size_t bboxes_size = bboxes.size();
+  for(const auto &bbox : bboxes)
+  {
+    if(bbox.label != ObjectClass::VEHICLE && bbox.label != ObjectClass::BIKE
+       && bbox.label != ObjectClass::MOTORBIKE && bbox.label != ObjectClass::PERSON)
+    {
+      bboxes_size -= 1;
+    }
+  }
+
+  return bbox_size > 0;
 }
 
 int main(int argc, char *argv[])

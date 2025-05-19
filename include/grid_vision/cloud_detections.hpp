@@ -4,10 +4,20 @@
 #include "grid_vision/object_detection.hpp"
 
 #include <pcl/point_cloud.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/extract_indices.h>
 #include <pcl/kdtree/kdtree_flann.h>
-#include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/pose.hpp>
 
 #include <vector>
+
+struct LShapePose
+{
+  geometry_msgs::msg::Pose pose;
+  double length; // along principal axis
+  double width;  // perpendicular to principal axis
+};
 
 namespace cloud_detections
 {

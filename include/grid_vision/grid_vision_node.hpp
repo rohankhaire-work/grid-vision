@@ -92,6 +92,7 @@ private:
   std::vector<geometry_msgs::msg::Point>
   convertPixelsTo3D(const std::vector<BoundingBox> &, const std::vector<float> &,
                     const Eigen::Matrix3d &);
+  bool RelevantBBoxes(const std::vector<BoundingBox> &);
 };
 
 #endif // GRID_VISION_NODE__GRID_VISION_NODE_HPP_
