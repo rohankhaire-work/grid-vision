@@ -72,7 +72,7 @@ private:
 
   // Publishers
   image_transport::Publisher detection_pub_;
-  image_transport::Publisher depth_img_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viz_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_pub_;
 
   void timerCallback();
@@ -81,6 +81,10 @@ private:
   void publishObjectDetections(const image_transport::Publisher &,
                                std::vector<BoundingBox> &, cv::Mat &, int);
   void publishOccupancyGrid(const grid_map::GridMap &grid_map, const std::string &base);
+  void publishObjectVisualizations(
+    const std::vector<LShapePose> &, const std::vector<geometry_msgs::msg::Point> &,
+    const std::vector<BoundingBox> &,
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr &);
 
   pcl::PointCloud<pcl::PointXYZI>::Ptr
   transformLidarToCamera(const pcl::PointCloud<pcl::PointXYZI> &, const std::string &,
@@ -90,16 +94,15 @@ private:
   transformPointToBaseFrame(const geometry_msgs::msg::Point &, const std::string &,
                             const std::string &);
   geometry_msgs::msg::Pose
-  GridVision::transformPoseToBaseFrame(const geometry_msgs::msg::Pose &obj_pose,
-                                       const std::string &source,
-                                       const std::string &target)
+  transformPoseToBaseFrame(const geometry_msgs::msg::Pose &obj_pose,
+                           const std::string &source, const std::string &target);
 
-    std::vector<geometry_msgs::msg::Point> convertPixelsTo3D(
-      const std::vector<BoundingBox> &, const std::vector<float> &,
-      const Eigen::Matrix3d &);
+  std::vector<geometry_msgs::msg::Point>
+  convertPixelsTo3D(const std::vector<BoundingBox> &, const std::vector<float> &,
+                    const Eigen::Matrix3d &);
 
   std::tuple<std::vector<BoundingBox>, std::vector<BoundingBox>>
-  GridVision::filterBBoxes(const std::vector<BoundingBox> &);
+  filterBBoxes(const std::vector<BoundingBox> &);
 
   void transformLShapeObjects(std::vector<LShapePose> &);
 };

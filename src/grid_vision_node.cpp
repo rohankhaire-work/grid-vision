@@ -44,6 +44,7 @@ GridVision::GridVision() : Node("grid_vision_node")
 
   detection_pub_ = image_transport::create_publisher(this, "carla/front/detections");
   occupancy_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("occupancy_grid", 10);
+  viz_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("objects_viz", 10);
 
   // Get weight paths
   std::string share_dir = ament_index_cpp::get_package_share_directory("grid_vision");
@@ -167,8 +168,7 @@ void GridVision::timerCallback()
                                                                 static_bboxes, k_near_);
 
     // Get the 3D co-ordinates of 2D detection in base frame
-    std::vector<geometry_msgs::msg::Point> cam_points
-      = convertPixelsTo3D(static_bboxes, depth_vec_, K_inv_);
+    cam_points = convertPixelsTo3D(static_bboxes, depth_vec_, K_inv_);
   }
 
   // Handle dynamic bboxes
@@ -275,7 +275,7 @@ GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
 
     // Transform to base frame
     geometry_msgs::msg::Point base_point
-      = transformToPointBaseFrame(cam_point, camera_frame_, base_frame_);
+      = transformPointToBaseFrame(cam_point, camera_frame_, base_frame_);
 
     point_vec.emplace_back(base_point);
   }
@@ -320,7 +320,7 @@ GridVision::transformPoseToBaseFrame(const geometry_msgs::msg::Pose &obj_pose,
       = tf_buffer_->lookupTransform(target, source, tf2::TimePointZero);
 
     // Transform the point
-    tf2::doTransform(obj_pose, base_point, transform_stamped);
+    tf2::doTransform(obj_pose, base_pose, transform_stamped);
   }
   catch(tf2::TransformException &ex)
   {
@@ -352,9 +352,9 @@ GridVision::filterBBoxes(const std::vector<BoundingBox> &bboxes)
 }
 
 void GridVision::publishObjectVisualizations(
-  const std::vector<LshapeBox> &lshape_boxes,
+  const std::vector<LShapePose> &lshape_boxes,
   const std::vector<geometry_msgs::msg::Point> &static_positions,
-  const std::vector<BoundingBox> &static_bbox,
+  const std::vector<BoundingBox> &static_bboxes,
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr &marker_pub)
 {
   visualization_msgs::msg::MarkerArray marker_array;
@@ -364,6 +364,7 @@ void GridVision::publishObjectVisualizations(
   for(size_t i = 0; i < static_positions.size(); ++i)
   {
     const auto &pos = static_positions[i];
+    const auto &static_bbox = static_bboxes[i];
 
     // Traffic Lights: Draw colored circle
     if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_RED
@@ -371,12 +372,13 @@ void GridVision::publishObjectVisualizations(
        || static_bbox.label == ObjectClass::TRAFFIC_LIGHT_GREEN)
     {
       visualization_msgs::msg::Marker light_marker;
-      light_marker.header.frame_id = "base_link";
+      light_marker.header.frame_id = base_frame_;
       light_marker.header.stamp = rclcpp::Clock().now();
       light_marker.ns = "traffic_light";
       light_marker.id = id++;
       light_marker.type = visualization_msgs::msg::Marker::SPHERE;
       light_marker.action = visualization_msgs::msg::Marker::ADD;
+      light_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
       light_marker.pose.position = pos;
       light_marker.pose.orientation.w = 1.0;
       light_marker.scale.x = 0.3;
@@ -404,15 +406,16 @@ void GridVision::publishObjectVisualizations(
     // Traffic Signs: Draw numbers
     if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_30
        || static_bbox.label == ObjectClass::TRAFFIC_SIGN_60
-       || static_bbox.label == ObjectClass::TRAFFIC_SIGN_90i)
+       || static_bbox.label == ObjectClass::TRAFFIC_SIGN_90)
     {
       visualization_msgs::msg::Marker text_marker;
-      text_marker.header.frame_id = "base_link";
+      text_marker.header.frame_id = base_frame_;
       text_marker.header.stamp = rclcpp::Clock().now();
       text_marker.ns = "traffic_sign";
       text_marker.id = id++;
       text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
       text_marker.action = visualization_msgs::msg::Marker::ADD;
+      text_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
       text_marker.pose.position = pos;
       text_marker.pose.position.z += 1.0;
       text_marker.pose.orientation.w = 1.0;
@@ -433,7 +436,7 @@ void GridVision::publishObjectVisualizations(
       }
       else if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_90)
       {
-        text_marker.color.g = "SPEED LIMIT: 90 KMPH";
+        text_marker.text = "SPEED LIMIT: 90 KMPH";
       }
 
       marker_array.markers.push_back(text_marker);
@@ -444,17 +447,18 @@ void GridVision::publishObjectVisualizations(
   for(const auto &box : lshape_boxes)
   {
     visualization_msgs::msg::Marker box_marker;
-    box_marker.header.frame_id = "base_link";
+    box_marker.header.frame_id = base_frame_;
     box_marker.header.stamp = rclcpp::Clock().now();
     box_marker.ns = "lshape_bbox";
     box_marker.id = id++;
     box_marker.type = visualization_msgs::msg::Marker::CUBE;
     box_marker.action = visualization_msgs::msg::Marker::ADD;
+    box_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
 
     box_marker.pose = box.pose;
-    bbox_marker.scale.x = box.length;
-    bbox_marker.scale.y = box.width;
-    bbox_marker.scale.z = 2.0;
+    box_marker.scale.x = 2.0;
+    box_marker.scale.y = 2.0;
+    box_marker.scale.z = 2.0;
 
     box_marker.color.r = 0.0;
     box_marker.color.g = 0.5;
