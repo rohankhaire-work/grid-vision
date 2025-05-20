@@ -456,14 +456,14 @@ void GridVision::publishObjectVisualizations(
     box_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
 
     box_marker.pose = box.pose;
-    box_marker.scale.x = 2.0;
-    box_marker.scale.y = 2.0;
+    box_marker.scale.x = box.length;
+    box_marker.scale.y = box.width;
     box_marker.scale.z = 2.0;
 
     box_marker.color.r = 0.0;
     box_marker.color.g = 0.5;
     box_marker.color.b = 1.0;
-    box_marker.color.a = 0.3;
+    box_marker.color.a = 1.0;
 
     marker_array.markers.push_back(box_marker);
   }

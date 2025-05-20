@@ -14,6 +14,7 @@
 #include <geometry_msgs/msg/pose.hpp>
 
 #include <vector>
+#include <spdlog/spdlog.h>
 
 struct LShapePose
 {

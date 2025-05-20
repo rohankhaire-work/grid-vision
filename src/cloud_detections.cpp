@@ -114,7 +114,7 @@ namespace cloud_detections
     seg.setOptimizeCoefficients(true);
     seg.setModelType(pcl::SACMODEL_PLANE);
     seg.setMethodType(pcl::SAC_RANSAC);
-    seg.setDistanceThreshold(0.02);
+    seg.setDistanceThreshold(0.04);
 
     seg.setInputCloud(input_cloud);
     seg.segment(*inliers, *coefficients);
@@ -147,15 +147,13 @@ namespace cloud_detections
       pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
       *cloud_ptr = bbox_cloud;
       pcl::PointCloud<pcl::PointXYZI> filtered_cloud;
-      pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
-      sor.setInputCloud(cloud_ptr);
-      sor.setMeanK(50);
-      sor.setStddevMulThresh(1.0);
-      sor.filter(filtered_cloud);
+      pcl::RadiusOutlierRemoval<pcl::PointXYZI> outrem;
+      outrem.setInputCloud(cloud_ptr);    // cloud is pcl::PointCloud<pcl::PointXYZ>::Ptr
+      outrem.setRadiusSearch(0.4);        // radius in meters (example: 10 cm)
+      outrem.setMinNeighborsInRadius(10); // minimum number of neighbors required
+      outrem.filter(filtered_cloud);
 
-      LShapePose result;
-
-      // Calculate centroid for height in 3D
+      // Get cnetroid
       Eigen::Vector4f centroid;
       pcl::compute3DCentroid(filtered_cloud, centroid);
 
@@ -164,62 +162,50 @@ namespace cloud_detections
       center.y = centroid[1];
       center.z = centroid[2];
 
-      geometry_msgs::msg::Pose pose;
-      // Convert points to cv::Mat (Nx2)
-      cv::Mat data_pts(filtered_cloud.points.size(), 2, CV_64F);
-      for(size_t i = 0; i < filtered_cloud.points.size(); ++i)
-      {
-        data_pts.at<double>(i, 0) = static_cast<double>(filtered_cloud.points[i].z);
-        data_pts.at<double>(i, 1) = static_cast<double>(filtered_cloud.points[i].x);
-      }
+      LShapePose result;
 
-      // Run PCA
-      cv::PCA pca(data_pts, cv::Mat(), cv::PCA::DATA_AS_ROW);
-
-      // Center of rectangle
-      double cz = pca.mean.at<double>(0, 0);
-      double cx = pca.mean.at<double>(0, 1);
-
-      // Eigenvectors (unit vectors)
-      cv::Vec2d major_axis(pca.eigenvectors.at<double>(0, 0),
-                           pca.eigenvectors.at<double>(0, 1)); // principal direction
-      cv::Vec2d minor_axis(pca.eigenvectors.at<double>(1, 0),
-                           pca.eigenvectors.at<double>(1, 1)); // orthogonal direction
-
-      std::vector<double> projections_major;
-      std::vector<double> projections_minor;
+      // Project points to XY
+      std::vector<cv::Point2f> points_2d;
 
       for(const auto &pt : filtered_cloud.points)
       {
-        cv::Vec2d vec(pt.x - cx, pt.z - cz);
-        projections_major.push_back(vec.dot(major_axis));
-        projections_minor.push_back(vec.dot(minor_axis));
+        points_2d.emplace_back(pt.z, pt.x);
       }
 
-      std::sort(projections_major.begin(), projections_major.end());
-      std::sort(projections_minor.begin(), projections_minor.end());
+      if(points_2d.empty())
+        continue;
+      // Get 2D min area rectangle
+      cv::RotatedRect rect = cv::minAreaRect(points_2d);
 
-      int n = projections_major.size();
-      double min_major = projections_major[n * 0.05];
-      double max_major = projections_major[n * 0.95];
-      double min_minor = projections_minor[n * 0.05];
-      double max_minor = projections_minor[n * 0.95];
+      // Extract angle and center
+      float angle_deg = rect.angle;
+      float width = rect.size.width;
+      float length = rect.size.height;
 
-      result.length = std::clamp(max_major - min_major, 0.1, 5.0); // 0.1 to 5 meters
-      result.width = std::clamp(max_minor - min_minor, 0.1, 3.0);
+      if(width > length)
+      {
+        std::swap(width, length);
+        angle_deg += 90.0f;
+      }
 
-      // Compute orientation
-      double angle = atan2(major_axis[1], major_axis[0]);
+      float angle_rad = angle_deg * CV_PI / 180.0f;
 
-      // Fill pose
-      result.pose.position.x = cx;
+      // Pose (position)
+      result.pose.position.x = rect.center.y;
       result.pose.position.y = center.y;
-      result.pose.position.z = cz;
+      result.pose.position.z = rect.center.x;
 
+      // Pose (orientation as quaternion)
       tf2::Quaternion q;
-      q.setRPY(0, -angle, 0); // rotation in XZ plane (around Y)
-      q.normalize();
-      result.pose.orientation = tf2::toMsg(q);
+      q.setRPY(0, -angle_rad, 0); // Rotation around Z only
+      result.pose.orientation.x = q.x();
+      result.pose.orientation.y = q.y();
+      result.pose.orientation.z = q.z();
+      result.pose.orientation.w = q.w();
+
+      // Dimensions
+      result.length = length;
+      result.width = width;
 
       lshape_pose.emplace_back(result);
     }
@@ -240,7 +226,7 @@ namespace cloud_detections
     // For each 3D point
     for(const auto &pt : cloud.points)
     {
-      if(!pcl::isFinite(pt) || pt.x <= 0.001f)
+      if(!pcl::isFinite(pt) || pt.z <= 0.001f)
         continue;
 
       // Convert to homogeneous coordinates
