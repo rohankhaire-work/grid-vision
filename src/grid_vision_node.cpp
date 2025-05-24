@@ -7,15 +7,12 @@ GridVision::GridVision() : Node("grid_vision_node")
   image_topic_ = declare_parameter<std::string>("image_topic", "");
   lidar_topic_ = declare_parameter<std::string>("lidar_topic", "");
   det_weight_file_ = declare_parameter<std::string>("detection_weights_file", "");
-  depth_weight_file_ = declare_parameter<std::string>("depth_weights_file", "");
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", "");
   camera_frame_ = declare_parameter<std::string>("camera_frame", "");
   base_frame_ = declare_parameter<std::string>("base_frame", "");
   conf_threshold_ = declare_parameter("confidence_threshold", 0.5);
   iou_threshold_ = declare_parameter("iou_threshold", 0.4);
   resize_ = declare_parameter("detection_network_input_size", 416);
-  depth_input_h_ = declare_parameter("depth_network_height", 192);
-  depth_input_w_ = declare_parameter("depth_network_width", 640);
   cam_height_ = declare_parameter("camera_image_height", 480);
   cam_width_ = declare_parameter("camera_image_width", 640);
   fx_ = declare_parameter("fx", 0.0);
@@ -23,11 +20,9 @@ GridVision::GridVision() : Node("grid_vision_node")
   cx_ = declare_parameter("cx", 0.0);
   cy_ = declare_parameter("cy", 0.0);
   k_near_ = declare_parameter("k_near", 10);
-  patch_size_ = declare_parameter("patch_size", 5);
   grid_x_ = declare_parameter("grid_x", 50);
   grid_y_ = declare_parameter("grid_y", 10);
   resolution_ = declare_parameter("resolution", 0.1);
-  camera_only_ = declare_parameter("camera_only", false);
 
   // Initialize occupancy grid
   occ_grid_ = OccupancyGridMap(base_frame_, grid_x_, grid_y_, resolution_);
@@ -48,21 +43,16 @@ GridVision::GridVision() : Node("grid_vision_node")
                                    std::bind(&GridVision::timerCallback, this));
 
   detection_pub_ = image_transport::create_publisher(this, "carla/front/detections");
-  depth_img_pub_ = image_transport::create_publisher(this, "carla/front/depth_image");
   occupancy_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("occupancy_grid", 10);
+  viz_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("objects_viz", 10);
 
   // Get weight paths
   std::string share_dir = ament_index_cpp::get_package_share_directory("grid_vision");
   std::string det_weight_path = share_dir + det_weight_file_;
-  std::string depth_weight_path = share_dir + depth_weight_file_;
 
   // Initialize ONNX runtime
   object_detection::initialize_onnx_runtime(session_, env_, session_options_,
                                             det_weight_path.c_str());
-
-  // Initialize TensorRT and depthEstimation class
-  monodepth_ = MonoDepthEstimation(depth_input_h_, depth_input_w_, cam_height_,
-                                   cam_width_, patch_size_, depth_weight_path);
 
   // Initialize tf2 for transforms
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -106,62 +96,65 @@ void GridVision::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedP
 void GridVision::timerCallback()
 {
   // Check if the image and pointcloud exists
-  if(init_image_.empty())
+  if(init_image_.empty() && cloud_.empty())
   {
-    RCLCPP_WARN(this->get_logger(), "Image is missing in GridVision");
+    RCLCPP_WARN(this->get_logger(), "Image or Pointcloud is missing in GridVision");
     publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
     return;
   }
 
-  if(cloud_.empty() && !camera_only_)
-  {
-    RCLCPP_WARN(this->get_logger(), "PointCloud is missing in GridVision");
-    publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
-    return;
-  }
   // Preprocess the image
   // Convert it to tensors
   cv::Mat preprocessed
     = object_detection::preprocess_image(init_image_, resize_, resize_);
   std::vector<float> input_tensor = object_detection::mat_to_tensor(preprocessed);
 
+  // log time
+  auto start_time = std::chrono::steady_clock::now();
   // Perform inference
-  // std::vector<Ort::Value> output
-  //  = object_detection::run_inference(input_tensor, session_);
+  std::vector<Ort::Value> output
+    = object_detection::run_inference(input_tensor, session_);
+
+  // Get run time
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration_ms
+    = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+
+  RCLCPP_INFO(this->get_logger(), "Inference took %ld ms", duration_ms);
 
   // Extract Bboxes
-  // std::vector<BoundingBox> bboxes = object_detection::extract_bboxes(
-  //  output, conf_threshold_, iou_threshold_, init_image_.cols, init_image_.rows, resize_);
+  std::vector<BoundingBox> bboxes = object_detection::extract_bboxes(
+    output, conf_threshold_, iou_threshold_, init_image_.cols, init_image_.rows, resize_);
 
   // If bboxes are empty then nothing to do
-  // if(bboxes.empty())
-  //{
-  // Update the map
-  //  occ_grid_->updateMap(occ_grid_->grid_map_);
-  //  publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
-  //  return;
-  //}
-  BoundingBox bbox;
-  bbox.confidence = 0.2;
-  bbox.x_max = 200;
-  bbox.y_max = 50;
-  bbox.x_min = 150;
-  bbox.y_min = 25;
-  std::vector<BoundingBox> bboxes;
-  bboxes.emplace_back(bbox);
-  if(!camera_only_) // use LIDAR
+  if(bboxes.empty())
   {
-    // Transform point cloud to camera frame
-    // return if not transformed_cloud
-    pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud
-      = transformLidarToCamera(cloud_, lidar_frame_, camera_frame_);
+    // Update the map
+    occ_grid_->updateMap(occ_grid_->grid_map_);
+    publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+    return;
+  }
 
-    if(!transformed_cloud)
-    {
-      publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
-      return;
-    }
+  // Filter bboxes vector for dynamic labels & static labels
+  // dynamic - vehicle, person, bike & motorbike
+  // static - traffic light, traffic sign
+  auto [static_bboxes, dynamic_bboxes] = filterBBoxes(bboxes);
 
+  // Transform point cloud to camera frame
+  // return if not transformed_cloud
+  pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud
+    = transformLidarToCamera(cloud_, lidar_frame_, camera_frame_);
+
+  if(!transformed_cloud)
+  {
+    publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+    return;
+  }
+
+  // Handle static bboxes
+  std::vector<geometry_msgs::msg::Point> cam_points;
+  if(!static_bboxes.empty())
+  {
     // Build KDTree for storing transformed point (3d to 2d pixel)
     pcl::PointCloud<pcl::PointXYZ>::Ptr image_points(
       new pcl::PointCloud<pcl::PointXYZ>());
@@ -172,27 +165,31 @@ void GridVision::timerCallback()
     // Get depth of 2D detections from kdtree
     // depth size = size of bboxes
     depth_vec_ = cloud_detections::computeDepthForBoundingBoxes(kdtree, image_points,
-                                                                bboxes, k_near_);
-  }
-  else // use monocular depth estimation
-  {
-    RCLCPP_ERROR(this->get_logger(), "RUN THE DEPTH ESTIMATION");
-    cv::Mat init_clone = init_image_.clone();
-    depth_vec_ = monodepth_->runInference(init_clone, bboxes);
-    RCLCPP_ERROR(this->get_logger(), "DEPTH ESTIMATION DONE");
+                                                                static_bboxes, k_near_);
+
+    // Get the 3D co-ordinates of 2D detection in base frame
+    cam_points = convertPixelsTo3D(static_bboxes, depth_vec_, K_inv_);
   }
 
-  // Get the 3D co-ordinates of 2D detection in base frame
-  // std::vector<geometry_msgs::msg::Point> cam_points
-  //  = convertPixelsTo3D(bboxes, depth_vec_, K_inv_);
-  // Update the occupancy grid map
-  // occ_grid_->updateMap(occ_grid_->grid_map_, cam_points, bboxes);
+  // Handle dynamic bboxes
+  std::vector<LShapePose> bboxes_pose;
+  if(!dynamic_bboxes.empty())
+  {
+    // Get the objects 3D pose and orienatation w.r.t
+    // camera co-ordiante frame
+    bboxes_pose = cloud_detections::computeBBoxPose(
+      transformed_cloud, intrinsic_mat_, bboxes, init_image_.rows, init_image_.cols);
+
+    // Transform pose from cam frame to base frame
+    transformLShapeObjects(bboxes_pose);
+  }
 
   // Publish 2D detections and Occupancy grid
-  // publishObjectDetections(detection_pub_, bboxes, init_image_, resize_);
-  publishDepthImage(depth_img_pub_);
-  // publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
-  RCLCPP_ERROR(this->get_logger(), "LOOP COMPLETE");
+  publishObjectDetections(detection_pub_, bboxes, init_image_, resize_);
+  publishOccupancyGrid(occ_grid_->grid_map_, base_frame_);
+
+  // Publish object visualizations
+  publishObjectVisualizations(bboxes_pose, cam_points, static_bboxes, viz_pub_);
 }
 
 void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
@@ -209,19 +206,6 @@ void GridVision::publishObjectDetections(const image_transport::Publisher &pub,
   header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
   sensor_msgs::msg::Image::SharedPtr msg
     = cv_bridge::CvImage(header, "rgb8", bbox_img).toImageMsg();
-
-  // Publish image
-  pub.publish(*msg);
-}
-
-void GridVision::publishDepthImage(const image_transport::Publisher &pub)
-{
-  cv::Mat bbox_img = monodepth_->depth_img_;
-  // Convert OpenCV image to ROS2 message
-  std_msgs::msg::Header header;
-  header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
-  sensor_msgs::msg::Image::SharedPtr msg
-    = cv_bridge::CvImage(header, "mono8", bbox_img).toImageMsg();
 
   // Publish image
   pub.publish(*msg);
@@ -286,19 +270,12 @@ GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
       bboxes[i].x_min + ((bboxes[i].x_max - bboxes[i].x_min) / 2.0f),
       bboxes[i].y_min + ((bboxes[i].y_max - bboxes[i].y_min) / 2.0f));
 
-    if(!camera_only_)
-    {
-      // Convert to 3D point in camera frame
-      cam_point = cloud_detections::pixelTo3D(pixel_center, depths[i], K_inv);
-    }
-    else
-    {
-      cam_point = monodepth_->pixelTo3D(pixel_center, depths[i], K_inv);
-    }
+    // Convert to 3D point in camera frame
+    cam_point = cloud_detections::pixelTo3D(pixel_center, depths[i], K_inv);
 
     // Transform to base frame
     geometry_msgs::msg::Point base_point
-      = transformToBaseFrame(cam_point, camera_frame_, base_frame_);
+      = transformPointToBaseFrame(cam_point, camera_frame_, base_frame_);
 
     point_vec.emplace_back(base_point);
   }
@@ -307,8 +284,9 @@ GridVision::convertPixelsTo3D(const std::vector<BoundingBox> &bboxes,
 }
 
 geometry_msgs::msg::Point
-GridVision::transformToBaseFrame(const geometry_msgs::msg::Point &cam_point,
-                                 const std::string &source, const std::string &target)
+GridVision::transformPointToBaseFrame(const geometry_msgs::msg::Point &cam_point,
+                                      const std::string &source,
+                                      const std::string &target)
 {
   geometry_msgs::msg::Point base_point;
 
@@ -327,6 +305,178 @@ GridVision::transformToBaseFrame(const geometry_msgs::msg::Point &cam_point,
   }
 
   return base_point;
+}
+
+geometry_msgs::msg::Pose
+GridVision::transformPoseToBaseFrame(const geometry_msgs::msg::Pose &obj_pose,
+                                     const std::string &source, const std::string &target)
+{
+  geometry_msgs::msg::Pose base_pose;
+
+  try
+  {
+    // Lookup transform from camera frame to base frame
+    geometry_msgs::msg::TransformStamped transform_stamped
+      = tf_buffer_->lookupTransform(target, source, tf2::TimePointZero);
+
+    // Transform the point
+    tf2::doTransform(obj_pose, base_pose, transform_stamped);
+  }
+  catch(tf2::TransformException &ex)
+  {
+    RCLCPP_ERROR(get_logger(), "Transform failed: %s", ex.what());
+  }
+
+  return base_pose;
+}
+
+std::tuple<std::vector<BoundingBox>, std::vector<BoundingBox>>
+GridVision::filterBBoxes(const std::vector<BoundingBox> &bboxes)
+{
+  std::vector<BoundingBox> static_bboxes;
+  std::vector<BoundingBox> dynamic_bboxes;
+
+  for(const auto &bbox : bboxes)
+  {
+    if(bbox.label == ObjectClass::VEHICLE || bbox.label == ObjectClass::BIKE
+       || bbox.label == ObjectClass::MOTORBIKE || bbox.label == ObjectClass::PERSON)
+    {
+      dynamic_bboxes.emplace_back(bbox);
+    }
+    else
+    {
+      static_bboxes.emplace_back(bbox);
+    }
+  }
+  return std::make_tuple(static_bboxes, dynamic_bboxes);
+}
+
+void GridVision::publishObjectVisualizations(
+  const std::vector<LShapePose> &lshape_boxes,
+  const std::vector<geometry_msgs::msg::Point> &static_positions,
+  const std::vector<BoundingBox> &static_bboxes,
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr &marker_pub)
+{
+  visualization_msgs::msg::MarkerArray marker_array;
+  int id = 0;
+
+  // === Visualize static objects (Traffic Lights and Signs) ===
+  for(size_t i = 0; i < static_positions.size(); ++i)
+  {
+    const auto &pos = static_positions[i];
+    const auto &static_bbox = static_bboxes[i];
+
+    // Traffic Lights: Draw colored circle
+    if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_RED
+       || static_bbox.label == ObjectClass::TRAFFIC_LIGHT_ORANGE
+       || static_bbox.label == ObjectClass::TRAFFIC_LIGHT_GREEN)
+    {
+      visualization_msgs::msg::Marker light_marker;
+      light_marker.header.frame_id = base_frame_;
+      light_marker.header.stamp = rclcpp::Clock().now();
+      light_marker.ns = "traffic_light";
+      light_marker.id = id++;
+      light_marker.type = visualization_msgs::msg::Marker::SPHERE;
+      light_marker.action = visualization_msgs::msg::Marker::ADD;
+      light_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
+      light_marker.pose.position = pos;
+      light_marker.pose.orientation.w = 1.0;
+      light_marker.scale.x = 0.3;
+      light_marker.scale.y = 0.3;
+      light_marker.scale.z = 0.3;
+
+      light_marker.color.a = 1.0;
+      if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_RED)
+      {
+        light_marker.color.r = 1.0;
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_ORANGE)
+      {
+        light_marker.color.r = 1.0;
+        light_marker.color.g = 1.0;
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_LIGHT_GREEN)
+      {
+        light_marker.color.g = 1.0;
+      }
+
+      marker_array.markers.push_back(light_marker);
+    }
+
+    // Traffic Signs: Draw numbers
+    if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_30
+       || static_bbox.label == ObjectClass::TRAFFIC_SIGN_60
+       || static_bbox.label == ObjectClass::TRAFFIC_SIGN_90)
+    {
+      visualization_msgs::msg::Marker text_marker;
+      text_marker.header.frame_id = base_frame_;
+      text_marker.header.stamp = rclcpp::Clock().now();
+      text_marker.ns = "traffic_sign";
+      text_marker.id = id++;
+      text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      text_marker.action = visualization_msgs::msg::Marker::ADD;
+      text_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
+      text_marker.pose.position = pos;
+      text_marker.pose.position.z += 1.0;
+      text_marker.pose.orientation.w = 1.0;
+
+      text_marker.scale.z = 0.5;
+      text_marker.color.r = 1.0;
+      text_marker.color.g = 1.0;
+      text_marker.color.b = 1.0;
+      text_marker.color.a = 1.0;
+
+      if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_30)
+      {
+        text_marker.text = "SPEED LIMIT: 30 KMPH";
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_60)
+      {
+        text_marker.text = "SPEED LIMIT: 60 KMPH";
+      }
+      else if(static_bbox.label == ObjectClass::TRAFFIC_SIGN_90)
+      {
+        text_marker.text = "SPEED LIMIT: 90 KMPH";
+      }
+
+      marker_array.markers.push_back(text_marker);
+    }
+  }
+
+  // === Visualize L-shape 3D Bounding Boxes ===
+  for(const auto &box : lshape_boxes)
+  {
+    visualization_msgs::msg::Marker box_marker;
+    box_marker.header.frame_id = base_frame_;
+    box_marker.header.stamp = rclcpp::Clock().now();
+    box_marker.ns = "lshape_bbox";
+    box_marker.id = id++;
+    box_marker.type = visualization_msgs::msg::Marker::CUBE;
+    box_marker.action = visualization_msgs::msg::Marker::ADD;
+    box_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
+
+    box_marker.pose = box.pose;
+    box_marker.scale.x = box.length;
+    box_marker.scale.y = box.width;
+    box_marker.scale.z = 2.0;
+
+    box_marker.color.r = 0.0;
+    box_marker.color.g = 0.5;
+    box_marker.color.b = 1.0;
+    box_marker.color.a = 1.0;
+
+    marker_array.markers.push_back(box_marker);
+  }
+
+  marker_pub->publish(marker_array);
+}
+
+void GridVision::transformLShapeObjects(std::vector<LShapePose> &bboxes_pose)
+{
+  for(auto &lshape : bboxes_pose)
+  {
+    lshape.pose = transformPoseToBaseFrame(lshape.pose, camera_frame_, base_frame_);
+  }
 }
 
 int main(int argc, char *argv[])

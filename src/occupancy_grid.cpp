@@ -146,7 +146,7 @@ float OccupancyGridMap::getEstimatedDepth(ObjectClass class_label)
 {
   switch(class_label)
   {
-  case ObjectClass::VEHICLE: return 4.5f;   // Car (4.5m depth)
+  case ObjectClass::VEHICLE: return 3.5f;   // Car (4.5m depth)
   case ObjectClass::PERSON: return 0.6f;    // Pedestrian (1.2m depth)
   case ObjectClass::BIKE: return 2.5f;      // Bicycle (2.5m depth)
   case ObjectClass::MOTORBIKE: return 2.5f; // Generic object (3.0m depth)
