@@ -1,5 +1,9 @@
 #include "grid_vision/vision_orientation.hpp"
+#include "grid_vision/cloud_detections.hpp"
 #include "grid_vision/object_detection.hpp"
+
+#include <cmath>
+#include <algorithm>
 
 VisionOrientation::VisionOrientation(const CAMParams &cam_params,
                                      const std::string &weight_file)
@@ -24,6 +28,9 @@ VisionOrientation::VisionOrientation(const CAMParams &cam_params,
 
   // Create stream
   cudaStreamCreate(&stream_);
+
+  // Generate bins
+  angle_bins_ = generateBins(2);
 }
 
 MonoDepthEstimation::~MonoDepthEstimation()
@@ -181,5 +188,208 @@ void VisionOrientation::runInference(const cv::Mat &input_img,
   cudaMemcpyAsync(output_dims_, buffers_[1], bboxes.size() * 3 * sizeof(float),
                   cudaMemcpyDeviceToHost, stream_);
 
+  // Use std::span for ease of access
+  std::span<float> orientation_span(output_orientation_, batch_size * 2 * 2);
+  std::span<float> conf_span(output_conf_, batch_size * 2);
+  std::span<float> dims_span(output_dims_, batch_size * 3);
+
   cudaStreamSynchronize(stream_);
+}
+
+std::vector<float> VisionOrientation::generateBins(int bins)
+{
+  std::vector<float> angle_bins(bins, 0.0f);
+  float interval = 2.0f * M_PI / bins;
+
+  for(int i = 1; i < bins; ++i)
+  {
+    angle_bins[i] = i * interval;
+  }
+
+  // Add half the interval to shift to bin centers
+  for(int i = 0; i < bins; ++i)
+  {
+    angle_bins[i] += interval / 2.0f;
+  }
+
+  return angle_bins;
+}
+
+float VisionOrientation::computeAlpha(const std::span<const float> &orient,
+                                      const std::span<const float> &conf)
+{
+  // Find the index of the maximum confidence
+  auto it = std::max_element(conf.begin(), conf.end());
+  int argmax = static_cast<int>(max_it - conf.begin());
+
+  // Get cosine and sine values for that bin
+  float cos_val = orient[argmax * 2 + 0];
+  float sin_val = orient[argmax * 2 + 1];
+
+  // Compute raw orientation angle
+  float alpha = std::atan2(sin_val, cos_val);
+
+  // Adjust with the center of the angle bin
+  alpha += angle_bins[argmax];
+  alpha -= static_cast<float>(M_PI);
+
+  return alpha;
+}
+
+Result
+calc_location(const std::array<float, 3> &dimension, const Eigen::Matrix4f &proj_matrix,
+              const Box2D &box_2d, float alpha, float theta_ray)
+{
+  float orient = alpha + theta_ray;
+  Eigen::Matrix3f R = rotation_matrix(orient);
+
+  // Extract box corners
+  float xmin = box_2d;
+  float ymin = box_2d;
+  float xmax = box_2d;
+  float ymax = box_2d;
+
+  std::array<float, 4> box_corners = {xmin, ymin, xmax, ymax};
+
+  // Dimension halves
+  float dx = dimension[2] / 2.0f; // length / 2
+  float dy = dimension[0] / 2.0f; // height / 2
+  float dz = dimension[1] / 2.0f; // width / 2
+
+  // Determine multipliers based on alpha
+  int left_mult = 1, right_mult = -1;
+  const float deg88 = 88 * M_PI / 180.0f;
+  const float deg90 = 90 * M_PI / 180.0f;
+  const float deg92 = 92 * M_PI / 180.0f;
+
+  if(alpha < deg92 && alpha > deg88)
+  {
+    left_mult = 1;
+    right_mult = 1;
+  }
+  else if(alpha < -deg88 && alpha > -deg92)
+  {
+    left_mult = -1;
+    right_mult = -1;
+  }
+  else if(alpha < deg90 && alpha > -deg90)
+  {
+    left_mult = -1;
+    right_mult = 1;
+  }
+
+  int switch_mult = (alpha > 0) ? 1 : -1;
+
+  // Build constraints
+  std::vector<Vec3> left_constraints;
+  std::vector<Vec3> right_constraints;
+  std::vector<Vec3> top_constraints;
+  std::vector<Vec3> bottom_constraints;
+
+  for(int i : {-1, 1})
+  {
+    left_constraints.push_back(
+      {left_mult * dx, static_cast<float>(i) * dy, -switch_mult * dz});
+    right_constraints.push_back(
+      {right_mult * dx, static_cast<float>(i) * dy, switch_mult * dz});
+  }
+
+  for(int i : {-1, 1})
+  {
+    for(int j : {-1, 1})
+    {
+      top_constraints.push_back(
+        {static_cast<float>(i) * dx, -dy, static_cast<float>(j) * dz});
+      bottom_constraints.push_back(
+        {static_cast<float>(i) * dx, dy, static_cast<float>(j) * dz});
+    }
+  }
+
+  // Generate all 64 combinations of constraints
+  std::vector<std::vector<Vec3>> constraints;
+  for(const auto &left : left_constraints)
+    for(const auto &top : top_constraints)
+      for(const auto &right : right_constraints)
+        for(const auto &bottom : bottom_constraints)
+        {
+          std::vector<Vec3> comb = {left, top, right, bottom};
+          if(all_unique(comb))
+            constraints.push_back(comb);
+        }
+
+  // Pre M matrix with 1's on diagonal (4x4)
+  Eigen::Matrix4f pre_M = Eigen::Matrix4f::Identity();
+
+  std::array<int, 4> indices = {0, 1, 0, 1}; // correspond to row selector for x or y
+
+  std::array<float, 3> best_loc = {0.f, 0.f, 0.f};
+  float best_error = std::numeric_limits<float>::max();
+  std::vector<Vec3> best_X;
+
+  for(const auto &constraint : constraints)
+  {
+    // Create M matrices for each corner
+    std::array<Eigen::Matrix4f, 4> M_array;
+    for(int i = 0; i < 4; ++i)
+    {
+      M_array[i] = pre_M;
+      Eigen::Vector3f RX
+        = R * Eigen::Vector3f(constraint[i][0], constraint[i][1], constraint[i][2]);
+      M_array[i].block<3, 1>(0, 3) = RX;
+      M_array[i] = proj_matrix * M_array[i];
+    }
+
+    // Construct A (4x3) and b (4x1)
+    Eigen::Matrix<float, 4, 3> A;
+    Eigen::Matrix<float, 4, 1> b;
+
+    for(int row = 0; row < 4; ++row)
+    {
+      int idx = indices[row];
+      const Eigen::Matrix4f &M = M_array[row];
+      float box_val = box_corners[row];
+
+      // A row: M[idx, :3] - box_corners[row] * M[2, :3]
+      A.row(row) = M.row(idx).head<3>() - box_val * M.row(2).head<3>();
+
+      // b row: box_corners[row]*M[2,3] - M[idx, 3]
+      b(row, 0) = box_val * M(2, 3) - M(idx, 3);
+    }
+
+    // Solve least squares: loc = (A^T A)^-1 A^T b
+    Eigen::Vector3f loc = A.colPivHouseholderQr().solve(b);
+
+    // Calculate error (residual norm)
+    float error = (A * loc - b).squaredNorm();
+
+    if(error < best_error)
+    {
+      best_error = error;
+      best_loc = {loc(0), loc(1), loc(2)};
+      best_X = constraint;
+    }
+  }
+
+  return {best_loc, best_X};
+}
+
+std::vector<LShapePose>
+VisionOrientation::postProcessOutputs(const std::span<const float> &orient_batch,
+                                      const std::span<const float> &conf_batch,
+                                      const std::span<const float> &dims_batch,
+                                      const std::vector<BoundingBox> &bboxes)
+{
+  std::vector<LShapePose> bbox_pose;
+
+  for(int i = 0; i < batch_size; ++i)
+  {
+    LShapePose result;
+    // Slice conf and orient for each element
+    std::span<const float> conf_sample = conf_batch.subspan(i * 2, 2);
+    std::span<const float> orient_sample = orient_batch.subspan(i * 4, 4);
+    std::span<const float> dims_sample = dims_batch.subspan(i * 3, 3);
+
+    float alpha = computeAlpha(orient_sample, conf_sample);
+    float theta_ray = computeThetaRay();
+  }
 }

@@ -1,7 +1,8 @@
-#ifndef DEPTH_ESTIMATION__DEPTH_ESTIMATION_HPP_
-#define DEPTH_ESTIMATION__DEPTH_ESTIMATION_HPP_
+#ifndef VISION_OREINTATION__VISION_ORIENTATION_HPP_
+#define VISION_OREINTATION__VISION_ORIENTATION_HPP_
 
 #include "grid_vision/object_detection.hpp"
+#include "grid_vision/cloud_detections.hpp"
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
@@ -40,6 +41,7 @@ private:
   Logger gLogger;
   std::vector<float> result_;
   const int max_batch_size_ = 8;
+  std::vector<float> angle_bins_;
 
   // Buffers
   void *buffers_[4];
