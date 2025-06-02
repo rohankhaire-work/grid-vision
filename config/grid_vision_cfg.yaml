@@ -9,6 +9,8 @@
     base_frame: "hero"
     camera_image_height: 480
     camera_image_width: 640
+    network_height: 224
+    network_width: 224
     confidence_threshold: 0.6  # Confidence threshold for detections
     iou_threshold: 0.6  # IoU threshold for filtering overlapping boxes
     fx: 320.0 
@@ -19,4 +21,4 @@
     grid_x: 50
     grid_y: 20
     resolution: 0.1
-    camera_only: True
+    use_vision_orientation: True

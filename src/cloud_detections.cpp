@@ -233,7 +233,7 @@ namespace cloud_detections
 
     // Pose (orientation as quaternion)
     tf2::Quaternion q;
-    q.setRPY(0, -angle, 0); // Rotation around Z only
+    q.setRPY(0, -angle, 0); // Rotation around -Y only
     result.pose.orientation.x = q.x();
     result.pose.orientation.y = q.y();
     result.pose.orientation.z = q.z();

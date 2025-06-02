@@ -4,12 +4,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -diag-suppress=20012")
 set(CMAKE_CUDA_ARCHITECTURES 86)
+set(CMAKE_CXX_STANDARD 20)
 
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(OpenCV REQUIRED)
 find_package(PCL 1.2 REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(TensorRT REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(onnxruntime REQUIRED)
 find_package(spdlog REQUIRED)
@@ -20,7 +23,8 @@ find_package(grid_map_ros REQUIRED)
 add_executable(grid_vision src/grid_vision_node.cpp
                            src/object_detection.cpp
                            src/cloud_detections.cpp
-                           src/occupancy_grid.cpp)
+                           src/occupancy_grid.cpp
+                           src/vision_orientation.cpp)
 
 target_include_directories(grid_vision PRIVATE include
                                             ${onnxruntime_INCLUDE_DIRS}/onnxruntime
@@ -32,6 +36,8 @@ ament_target_dependencies(grid_vision rclcpp cv_bridge image_transport pcl_conve
                                       tf2_ros tf2_geometry_msgs grid_map_ros)
 
 target_link_libraries(grid_vision
+    ${CUDAToolkit_LIBRARY_DIR}/libcudart.so
+    ${TensorRT_LIBRARY_DIRS}/libnvinfer.so
     ${onnxruntime_LIBRARY}
     ${OpenCV_LIBS}
     ${PCL_LIBRARIES}

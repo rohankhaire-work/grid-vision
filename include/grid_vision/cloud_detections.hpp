@@ -21,6 +21,7 @@ struct LShapePose
   geometry_msgs::msg::Pose pose;
   double length; // along principal axis
   double width;  // perpendicular to principal axis
+  double height;
 };
 
 namespace cloud_detections

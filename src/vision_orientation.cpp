@@ -1,9 +1,9 @@
 #include "grid_vision/vision_orientation.hpp"
-#include "grid_vision/cloud_detections.hpp"
-#include "grid_vision/object_detection.hpp"
 
 #include <cmath>
 #include <algorithm>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 VisionOrientation::VisionOrientation(const CAMParams &cam_params,
                                      const std::string &weight_file)
@@ -11,17 +11,26 @@ VisionOrientation::VisionOrientation(const CAMParams &cam_params,
   // Set depth img size and detection img size
   resize_h_ = cam_params.network_h;
   resize_w_ = cam_params.network_w;
+  orig_h_ = cam_params.orig_h;
+  orig_w_ = cam_params.orig_w;
+
+  // Set projection matrix
+  proj_mat_ << cam_params.fx, 0.0f, cam_params.cx, 0.0f, 0.0f, cam_params.fy,
+    cam_params.cy, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f;
 
   // Set up TRT
   initializeTRT(weight_file);
 
   // Allocate buffers
-  cudaError_t err
-    = cudaMallocHost(reinterpret_cast<void **>(&input_host_),
-                     max_batch_size_ * 3 * resize_h_ * resize_w_ * sizeof(float));
+  cudaMallocHost(reinterpret_cast<void **>(&input_host_),
+                 max_batch_size_ * 3 * resize_h_ * resize_w_ * sizeof(float));
   cudaMalloc(&buffers_[0], max_batch_size_ * 3 * resize_h_ * resize_w_ * sizeof(float));
-  cudaMallocHost(reinterpret_cast<void **>(&output_host_),
-                 resize_h_ * resize_w_ * sizeof(float));
+  cudaMallocHost(reinterpret_cast<void **>(&output_orientation_),
+                 max_batch_size_ * 2 * 2 * sizeof(float));
+  cudaMallocHost(reinterpret_cast<void **>(&output_conf_),
+                 max_batch_size_ * 2 * sizeof(float));
+  cudaMallocHost(reinterpret_cast<void **>(&output_dims_),
+                 max_batch_size_ * 3 * sizeof(float));
   cudaMalloc(&buffers_[1], max_batch_size_ * 2 * 2 * sizeof(float));
   cudaMalloc(&buffers_[2], max_batch_size_ * 2 * sizeof(float));
   cudaMalloc(&buffers_[3], max_batch_size_ * 3 * sizeof(float));
@@ -33,7 +42,7 @@ VisionOrientation::VisionOrientation(const CAMParams &cam_params,
   angle_bins_ = generateBins(2);
 }
 
-MonoDepthEstimation::~MonoDepthEstimation()
+VisionOrientation::~VisionOrientation()
 {
   if(buffers_[0])
   {
@@ -45,15 +54,35 @@ MonoDepthEstimation::~MonoDepthEstimation()
     cudaFree(buffers_[1]);
     buffers_[1] = nullptr;
   }
+  if(buffers_[2])
+  {
+    cudaFree(buffers_[2]);
+    buffers_[2] = nullptr;
+  }
+  if(buffers_[3])
+  {
+    cudaFree(buffers_[3]);
+    buffers_[3] = nullptr;
+  }
   if(input_host_)
   {
     cudaFreeHost(input_host_);
     input_host_ = nullptr;
   }
-  if(output_host_)
+  if(output_orientation_)
   {
-    cudaFreeHost(output_host_);
-    output_host_ = nullptr;
+    cudaFreeHost(output_orientation_);
+    output_orientation_ = nullptr;
+  }
+  if(output_conf_)
+  {
+    cudaFreeHost(output_conf_);
+    output_conf_ = nullptr;
+  }
+  if(output_dims_)
+  {
+    cudaFreeHost(output_dims_);
+    output_dims_ = nullptr;
   }
   if(stream_)
   {
@@ -153,8 +182,9 @@ void VisionOrientation::initializeTRT(const std::string &engine_file)
   context.reset(engine->createExecutionContext());
 }
 
-void VisionOrientation::runInference(const cv::Mat &input_img,
-                                     const std::vector<BoundingBox> &bboxes)
+std::vector<LShapePose>
+VisionOrientation::runInference(const cv::Mat &input_img,
+                                const std::vector<BoundingBox> &bboxes)
 {
   // Preprocess image and convert to vector
   std::vector<float> input_tensor = preprocessImage(input_img, bboxes);
@@ -168,8 +198,7 @@ void VisionOrientation::runInference(const cv::Mat &input_img,
 
   // Set input dimension
   nvinfer1::Dims4 inputDims(bboxes.size(), 3, resize_h_, resize_w_);
-  int input_index = engine->getBindingIndex("input");
-  context->setBindingDimensions(input_index, inputDims);
+  context->setInputShape("input", inputDims);
 
   // Set up inference buffers
   context->setInputTensorAddress("input", buffers_[0]);
@@ -185,15 +214,21 @@ void VisionOrientation::runInference(const cv::Mat &input_img,
                   cudaMemcpyDeviceToHost, stream_);
   cudaMemcpyAsync(output_conf_, buffers_[2], bboxes.size() * 2 * sizeof(float),
                   cudaMemcpyDeviceToHost, stream_);
-  cudaMemcpyAsync(output_dims_, buffers_[1], bboxes.size() * 3 * sizeof(float),
+  cudaMemcpyAsync(output_dims_, buffers_[3], bboxes.size() * 3 * sizeof(float),
                   cudaMemcpyDeviceToHost, stream_);
 
-  // Use std::span for ease of access
-  std::span<float> orientation_span(output_orientation_, batch_size * 2 * 2);
-  std::span<float> conf_span(output_conf_, batch_size * 2);
-  std::span<float> dims_span(output_dims_, batch_size * 3);
-
   cudaStreamSynchronize(stream_);
+
+  // Use std::span for ease of access
+  std::span<float> orientation_span(output_orientation_, bboxes.size() * 2 * 2);
+  std::span<float> conf_span(output_conf_, bboxes.size() * 2);
+  std::span<float> dims_span(output_dims_, bboxes.size() * 3);
+
+  // Pose process output
+  std::vector<LShapePose> bbox_3d
+    = postProcessOutputs(orientation_span, conf_span, dims_span, bboxes);
+
+  return bbox_3d;
 }
 
 std::vector<float> VisionOrientation::generateBins(int bins)
@@ -216,12 +251,8 @@ std::vector<float> VisionOrientation::generateBins(int bins)
 }
 
 float VisionOrientation::computeAlpha(const std::span<const float> &orient,
-                                      const std::span<const float> &conf)
+                                      const std::span<const float> &conf, int argmax)
 {
-  // Find the index of the maximum confidence
-  auto it = std::max_element(conf.begin(), conf.end());
-  int argmax = static_cast<int>(max_it - conf.begin());
-
   // Get cosine and sine values for that bin
   float cos_val = orient[argmax * 2 + 0];
   float sin_val = orient[argmax * 2 + 1];
@@ -230,26 +261,39 @@ float VisionOrientation::computeAlpha(const std::span<const float> &orient,
   float alpha = std::atan2(sin_val, cos_val);
 
   // Adjust with the center of the angle bin
-  alpha += angle_bins[argmax];
+  alpha += angle_bins_[argmax];
   alpha -= static_cast<float>(M_PI);
 
   return alpha;
 }
 
-Result
-calc_location(const std::array<float, 3> &dimension, const Eigen::Matrix4f &proj_matrix,
-              const Box2D &box_2d, float alpha, float theta_ray)
+float VisionOrientation::computeThetaRay(const BoundingBox &bbox)
+{
+  float fx = proj_mat_(0, 0); // Focal length in x-direction
+  float fovx = 2.0f * std::atan(orig_w_ / (2.0f * fx));
+
+  float box_center_x = (bbox.x_min + bbox.x_max) / 2.0f;
+  float dx = box_center_x - (orig_w_ / 2.0f);
+
+  float sign = (dx < 0) ? -1.0f : 1.0f;
+  dx = std::abs(dx);
+
+  float angle = std::atan((2.0f * dx * std::tan(fovx / 2.0f)) / orig_w_);
+  angle *= sign;
+
+  return angle;
+}
+
+geometry_msgs::msg::Pose
+VisionOrientation::calcLocation(const std::span<const float> &dimension,
+                                const BoundingBox &bbox, float alpha, float theta_ray)
 {
   float orient = alpha + theta_ray;
-  Eigen::Matrix3f R = rotation_matrix(orient);
+  Eigen::Matrix3f R = rotationMatrix(orient);
 
-  // Extract box corners
-  float xmin = box_2d;
-  float ymin = box_2d;
-  float xmax = box_2d;
-  float ymax = box_2d;
-
-  std::array<float, 4> box_corners = {xmin, ymin, xmax, ymax};
+  std::array<float, 4> box_corners
+    = {static_cast<float>(bbox.x_min), static_cast<float>(bbox.y_min),
+       static_cast<float>(bbox.x_max), static_cast<float>(bbox.y_max)};
 
   // Dimension halves
   float dx = dimension[2] / 2.0f; // length / 2
@@ -307,14 +351,19 @@ calc_location(const std::array<float, 3> &dimension, const Eigen::Matrix4f &proj
 
   // Generate all 64 combinations of constraints
   std::vector<std::vector<Vec3>> constraints;
+  std::vector<Vec3> comb(4);
+  constraints.reserve(64);
   for(const auto &left : left_constraints)
     for(const auto &top : top_constraints)
       for(const auto &right : right_constraints)
         for(const auto &bottom : bottom_constraints)
         {
-          std::vector<Vec3> comb = {left, top, right, bottom};
-          if(all_unique(comb))
-            constraints.push_back(comb);
+          comb[0] = left;
+          comb[1] = top;
+          comb[2] = right;
+          comb[3] = bottom;
+
+          constraints.push_back(comb);
         }
 
   // Pre M matrix with 1's on diagonal (4x4)
@@ -334,9 +383,9 @@ calc_location(const std::array<float, 3> &dimension, const Eigen::Matrix4f &proj
     {
       M_array[i] = pre_M;
       Eigen::Vector3f RX
-        = R * Eigen::Vector3f(constraint[i][0], constraint[i][1], constraint[i][2]);
+        = R * Eigen::Vector3f(constraint[i].x, constraint[i].y, constraint[i].z);
       M_array[i].block<3, 1>(0, 3) = RX;
-      M_array[i] = proj_matrix * M_array[i];
+      M_array[i] = proj_mat_ * M_array[i];
     }
 
     // Construct A (4x3) and b (4x1)
@@ -370,7 +419,21 @@ calc_location(const std::array<float, 3> &dimension, const Eigen::Matrix4f &proj
     }
   }
 
-  return {best_loc, best_X};
+  geometry_msgs::msg::Pose best_pose;
+
+  best_pose.position.x = best_loc[2];
+  best_pose.position.y = best_loc[1];
+  best_pose.position.z = best_loc[0];
+
+  // Pose (orientation as quaternion)
+  tf2::Quaternion q;
+  q.setRPY(0, -orient, 0);
+  best_pose.orientation.x = q.x();
+  best_pose.orientation.y = q.y();
+  best_pose.orientation.z = q.z();
+  best_pose.orientation.w = q.w();
+
+  return best_pose;
 }
 
 std::vector<LShapePose>
@@ -379,9 +442,9 @@ VisionOrientation::postProcessOutputs(const std::span<const float> &orient_batch
                                       const std::span<const float> &dims_batch,
                                       const std::vector<BoundingBox> &bboxes)
 {
-  std::vector<LShapePose> bbox_pose;
+  std::vector<LShapePose> bbox_3d;
 
-  for(int i = 0; i < batch_size; ++i)
+  for(int i = 0; i < bboxes.size(); ++i)
   {
     LShapePose result;
     // Slice conf and orient for each element
@@ -389,7 +452,31 @@ VisionOrientation::postProcessOutputs(const std::span<const float> &orient_batch
     std::span<const float> orient_sample = orient_batch.subspan(i * 4, 4);
     std::span<const float> dims_sample = dims_batch.subspan(i * 3, 3);
 
-    float alpha = computeAlpha(orient_sample, conf_sample);
-    float theta_ray = computeThetaRay();
+    // Find the index of the maximum confidence
+    auto max_it = std::max_element(conf_sample.begin(), conf_sample.end());
+    int argmax = static_cast<int>(max_it - conf_sample.begin());
+
+    float alpha = computeAlpha(orient_sample, conf_sample, argmax);
+    float theta_ray = computeThetaRay(bboxes[i]);
+
+    geometry_msgs::msg::Pose bbox_pose
+      = calcLocation(dims_sample, bboxes[i], alpha, theta_ray);
+
+    result.pose = bbox_pose;
+    result.length = dims_sample[argmax * 3 + 2];
+    result.height = dims_sample[argmax * 3 + 0];
+    result.width = dims_sample[argmax * 3 + 1];
+
+    bbox_3d.emplace_back(result);
   }
+  return bbox_3d;
+}
+
+Eigen::Matrix3f VisionOrientation::rotationMatrix(float theta)
+{
+  float c = std::cos(theta);
+  float s = std::sin(theta);
+  Eigen::Matrix3f R;
+  R << c, 0, s, 0, 1, 0, -s, 0, c;
+  return R;
 }

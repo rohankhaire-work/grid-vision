@@ -1,5 +1,6 @@
 #include "grid_vision/grid_vision_node.hpp"
 #include "grid_vision/object_detection.hpp"
+#include <memory>
 
 GridVision::GridVision() : Node("grid_vision_node")
 {
@@ -7,22 +8,28 @@ GridVision::GridVision() : Node("grid_vision_node")
   image_topic_ = declare_parameter<std::string>("image_topic", "");
   lidar_topic_ = declare_parameter<std::string>("lidar_topic", "");
   det_weight_file_ = declare_parameter<std::string>("detection_weights_file", "");
+  vis_weight_file_ = declare_parameter<std::string>("vision_weight_file", "");
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", "");
   camera_frame_ = declare_parameter<std::string>("camera_frame", "");
   base_frame_ = declare_parameter<std::string>("base_frame", "");
   conf_threshold_ = declare_parameter("confidence_threshold", 0.5);
   iou_threshold_ = declare_parameter("iou_threshold", 0.4);
   resize_ = declare_parameter("detection_network_input_size", 416);
-  cam_height_ = declare_parameter("camera_image_height", 480);
-  cam_width_ = declare_parameter("camera_image_width", 640);
-  fx_ = declare_parameter("fx", 0.0);
-  fy_ = declare_parameter("fy", 0.0);
-  cx_ = declare_parameter("cx", 0.0);
-  cy_ = declare_parameter("cy", 0.0);
   k_near_ = declare_parameter("k_near", 10);
   grid_x_ = declare_parameter("grid_x", 50);
   grid_y_ = declare_parameter("grid_y", 10);
   resolution_ = declare_parameter("resolution", 0.1);
+  use_vision_orientation_ = declare_parameter("use_vision_orientation", false);
+
+  // Set CAMParams Struct
+  cam_params_.orig_h = declare_parameter("camera_image_height", 480);
+  cam_params_.orig_w = declare_parameter("camera_image_width", 640);
+  cam_params_.network_h = declare_parameter("network_height", 224);
+  cam_params_.network_w = declare_parameter("network_width", 224);
+  cam_params_.fx = declare_parameter("fx", 0.0);
+  cam_params_.fy = declare_parameter("fy", 0.0);
+  cam_params_.cx = declare_parameter("cx", 0.0);
+  cam_params_.cy = declare_parameter("cy", 0.0);
 
   // Initialize occupancy grid
   occ_grid_ = OccupancyGridMap(base_frame_, grid_x_, grid_y_, resolution_);
@@ -54,12 +61,16 @@ GridVision::GridVision() : Node("grid_vision_node")
   object_detection::initialize_onnx_runtime(session_, env_, session_options_,
                                             det_weight_path.c_str());
 
+  // Initialize Vision orientation network
+  vision_orient_ = std::make_unique<VisionOrientation>(cam_params_, vis_weight_file_);
+
   // Initialize tf2 for transforms
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
   // Set Intrinsic Matrix
-  intrinsic_mat_ = object_detection::setIntrinsicMatrix(fx_, fy_, cx_, cy_);
+  intrinsic_mat_ = object_detection::setIntrinsicMatrix(cam_params_.fx, cam_params_.fy,
+                                                        cam_params_.cx, cam_params_.cy);
   // Get Intrinsic Matrix Inverse
   K_inv_ = object_detection::computeKInverse(intrinsic_mat_);
 }
@@ -175,13 +186,24 @@ void GridVision::timerCallback()
   std::vector<LShapePose> bboxes_pose;
   if(!dynamic_bboxes.empty())
   {
-    // Get the objects 3D pose and orienatation w.r.t
-    // camera co-ordiante frame
-    bboxes_pose = cloud_detections::computeBBoxPose(
-      transformed_cloud, intrinsic_mat_, bboxes, init_image_.rows, init_image_.cols);
+    if(use_vision_orientation_)
+    {
+      // Run vision orientation network
+      vision_orient_->runInference(init_image_, dynamic_bboxes);
 
-    // Transform pose from cam frame to base frame
-    transformLShapeObjects(bboxes_pose);
+      // Transform pose from cam frame to base frame
+      transformLShapeObjects(bboxes_pose);
+    }
+    else
+    {
+      // Get the objects 3D pose and orienatation w.r.t
+      // camera co-ordiante frame using PCA
+      bboxes_pose = cloud_detections::computeBBoxPose(
+        transformed_cloud, intrinsic_mat_, bboxes, init_image_.rows, init_image_.cols);
+
+      // Transform pose from cam frame to base frame
+      transformLShapeObjects(bboxes_pose);
+    }
   }
 
   // Publish 2D detections and Occupancy grid

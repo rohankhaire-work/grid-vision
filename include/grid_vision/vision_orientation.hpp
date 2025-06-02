@@ -6,17 +6,27 @@
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
+#include <Eigen/Dense>
 
 #include <fstream>
 #include <iostream>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <vector>
+#include <span>
 
 struct CAMParams
 {
   int network_h;
   int network_w;
+  int orig_h;
+  int orig_w;
+  float fx, fy, cx, cy;
+};
+
+struct Vec3
+{
+  double x, y, z;
 };
 
 class Logger : public nvinfer1::ILogger
@@ -34,14 +44,15 @@ public:
   VisionOrientation(const CAMParams &, const std::string &);
   ~VisionOrientation();
 
-  void runInference(const cv::Mat &, const std::vector<BoundingBox> &);
+  std::vector<LShapePose> runInference(const cv::Mat &, const std::vector<BoundingBox> &);
 
 private:
-  int resize_h_, resize_w_;
+  int resize_h_, resize_w_, orig_w_, orig_h_;
   Logger gLogger;
   std::vector<float> result_;
   const int max_batch_size_ = 8;
   std::vector<float> angle_bins_;
+  Eigen::Matrix<float, 4, 4> proj_mat_;
 
   // Buffers
   void *buffers_[4];
@@ -56,10 +67,22 @@ private:
   std::unique_ptr<nvinfer1::IExecutionContext> context;
   cudaStream_t stream_;
 
+  void setProjMat(float, float, float, float);
+  cv::Mat normalizeRGB(const cv::Mat &);
   std::vector<float> preprocessImage(const cv::Mat &, const std::vector<BoundingBox> &);
   std::vector<float> imageToTensor(const cv::Mat &);
   void initializeTRT(const std::string &);
   cv::Mat getNetworkBoundingBox(const cv::Mat &, const BoundingBox &);
+  std::vector<float> generateBins(int);
+  float computeAlpha(const std::span<const float> &, const std::span<const float> &, int);
+  float computeThetaRay(const BoundingBox &);
+  geometry_msgs::msg::Pose calcLocation(const std::span<const float> &dimension,
+                                        const BoundingBox &, float, float);
+  std::vector<LShapePose> postProcessOutputs(const std::span<const float> &orient_batch,
+                                             const std::span<const float> &conf_batch,
+                                             const std::span<const float> &dims_batch,
+                                             const std::vector<BoundingBox> &bboxes);
+  Eigen::Matrix3f rotationMatrix(float);
 };
 
-#endif // DEPTH_ESTIMATION__DEPTH_ESTIMATION_HPP_
+#endif // VISION_ORIENTATION__VISION_ORIENTATION_HPP_
