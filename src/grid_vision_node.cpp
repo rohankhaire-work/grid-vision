@@ -120,7 +120,7 @@ void GridVision::timerCallback()
   auto duration_ms
     = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
-  RCLCPP_INFO(this->get_logger(), "Inference took %ld ms", duration_ms);
+  // RCLCPP_INFO(this->get_logger(), "Inference took %ld ms", duration_ms);
 
   // Extract Bboxes
   std::vector<BoundingBox> bboxes = object_detection::extract_bboxes(

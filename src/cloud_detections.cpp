@@ -148,8 +148,8 @@ namespace cloud_detections
       *cloud_ptr = bbox_cloud;
       pcl::PointCloud<pcl::PointXYZI> filtered_cloud;
       pcl::RadiusOutlierRemoval<pcl::PointXYZI> outrem;
-      outrem.setInputCloud(cloud_ptr);    // cloud is pcl::PointCloud<pcl::PointXYZ>::Ptr
-      outrem.setRadiusSearch(0.4);        // radius in meters (example: 10 cm)
+      outrem.setInputCloud(cloud_ptr); // cloud is pcl::PointCloud<pcl::PointXYZ>::Ptr
+      outrem.setRadiusSearch(0.4);
       outrem.setMinNeighborsInRadius(10); // minimum number of neighbors required
       outrem.filter(filtered_cloud);
 
@@ -157,58 +157,93 @@ namespace cloud_detections
       Eigen::Vector4f centroid;
       pcl::compute3DCentroid(filtered_cloud, centroid);
 
-      pcl::PointXYZ center;
-      center.x = centroid[0];
-      center.y = centroid[1];
-      center.z = centroid[2];
-
-      LShapePose result;
-
       // Project points to XY
       std::vector<cv::Point2f> points_2d;
-
       for(const auto &pt : filtered_cloud.points)
       {
         points_2d.emplace_back(pt.z, pt.x);
       }
 
-      if(points_2d.empty())
-        continue;
-      // Get 2D min area rectangle
-      cv::RotatedRect rect = cv::minAreaRect(points_2d);
-
-      // Extract angle and center
-      float angle_deg = rect.angle;
-      float width = rect.size.width;
-      float length = rect.size.height;
-
-      if(width > length)
+      cv::Mat data(points_2d.size(), 2, CV_32F);
+      for(int i = 0; i < filtered_cloud.points.size(); ++i)
       {
-        std::swap(width, length);
-        angle_deg += 90.0f;
+        data.at<float>(i, 0) = filtered_cloud.points[i].z;
+        data.at<float>(i, 1) = filtered_cloud.points[i].x;
       }
 
-      float angle_rad = angle_deg * CV_PI / 180.0f;
+      if(data.empty())
+        continue;
 
-      // Pose (position)
-      result.pose.position.x = rect.center.y;
-      result.pose.position.y = center.y;
-      result.pose.position.z = rect.center.x;
+      // Get 2D min area rectangle
+      LShapePose result = computePCABoundingBox(data);
 
-      // Pose (orientation as quaternion)
-      tf2::Quaternion q;
-      q.setRPY(0, -angle_rad, 0); // Rotation around Z only
-      result.pose.orientation.x = q.x();
-      result.pose.orientation.y = q.y();
-      result.pose.orientation.z = q.z();
-      result.pose.orientation.w = q.w();
-
-      // Dimensions
-      result.length = length;
-      result.width = width;
+      // Fill the height of bbox
+      result.pose.position.y = centroid[1];
 
       lshape_pose.emplace_back(result);
     }
+  }
+
+  LShapePose computePCABoundingBox(const cv::Mat &data)
+  {
+    LShapePose result;
+
+    cv::PCA pca(data, cv::Mat(), cv::PCA::DATA_AS_ROW);
+
+    // PCA mean (center)
+    cv::Point2f center(pca.mean.at<float>(0), pca.mean.at<float>(1));
+
+    // Eigenvectors
+    cv::Point2f major(pca.eigenvectors.at<float>(0, 0),
+                      pca.eigenvectors.at<float>(0, 1)); // direction of length
+    cv::Point2f minor(pca.eigenvectors.at<float>(1, 0),
+                      pca.eigenvectors.at<float>(1, 1)); // direction of width
+
+    // Project points onto PCA axes
+    float minL = FLT_MAX, maxL = -FLT_MAX, minW = FLT_MAX, maxW = -FLT_MAX;
+    for(int i = 0; i < data.rows; ++i)
+    {
+      cv::Point2f pt(data.at<float>(i, 0), data.at<float>(i, 1));
+      cv::Point2f d = pt - center;
+
+      float projL = d.dot(major);
+      float projW = d.dot(minor);
+
+      minL = std::min(minL, projL);
+      maxL = std::max(maxL, projL);
+      minW = std::min(minW, projW);
+      maxW = std::max(maxW, projW);
+    }
+
+    float length = maxL - minL;
+    float width = maxW - minW;
+
+    // Compute corner points
+    cv::Point2f corner1 = center + minL * major + minW * minor;
+    cv::Point2f corner2 = center + maxL * major + minW * minor;
+    cv::Point2f corner3 = center + maxL * major + maxW * minor;
+    cv::Point2f corner4 = center + minL * major + maxW * minor;
+
+    float angle = std::atan2(major.y, major.x) * 180.0f / CV_PI;
+
+    // Pose (position)
+    result.pose.position.x = center.y;
+    result.pose.position.y = 0.0;
+    result.pose.position.z = center.x;
+
+    // Pose (orientation as quaternion)
+    tf2::Quaternion q;
+    q.setRPY(0, -angle, 0); // Rotation around Z only
+    result.pose.orientation.x = q.x();
+    result.pose.orientation.y = q.y();
+    result.pose.orientation.z = q.z();
+    result.pose.orientation.w = q.w();
+
+    // Dimensions
+    result.length = length;
+    result.width = width;
+
+    return result;
   }
 
   // Projects 3D cloud into image space and collects 3D points inside each bbox

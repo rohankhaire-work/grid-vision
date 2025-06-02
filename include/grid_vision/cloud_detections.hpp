@@ -50,6 +50,8 @@ namespace cloud_detections
   computeBBoxPose(const pcl::PointCloud<pcl::PointXYZI>::Ptr &, const Eigen::Matrix3d &,
                   const std::vector<BoundingBox> &, int, int);
 
+  LShapePose computePCABoundingBox(const cv::Mat &);
+
 }
 
 #endif // CCLOUD_DETECTIONS__CLOUD_DETECTIONS_HPP_
