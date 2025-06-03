@@ -52,7 +52,21 @@ private:
   std::vector<float> result_;
   const int max_batch_size_ = 8;
   std::vector<float> angle_bins_;
-  Eigen::Matrix<float, 4, 4> proj_mat_;
+  Eigen::Matrix<float, 3, 4> proj_mat_;
+
+  // Averages of dynamic bboxes
+  float car_avg_len_ = 3.884f;
+  float car_avg_wid_ = 1.629f;
+  float car_avg_ht_ = 1.526f;
+  float bicycle_avg_len_ = 1.763f;
+  float bicycle_avg_wid_ = 0.597f;
+  float bicycle_avg_ht_ = 1.737f;
+  float bike_avg_len_ = 2.2f;
+  float bike_avg_wid_ = 0.8f;
+  float bike_avg_ht_ = 1.5f;
+  float person_avg_len_ = 0.842f;
+  float person_avg_wid_ = 0.660f;
+  float person_avg_ht_ = 1.761f;
 
   // Buffers
   void *buffers_[4];
@@ -76,12 +90,11 @@ private:
   std::vector<float> generateBins(int);
   float computeAlpha(const std::span<const float> &, const std::span<const float> &, int);
   float computeThetaRay(const BoundingBox &);
-  geometry_msgs::msg::Pose calcLocation(const std::span<const float> &dimension,
-                                        const BoundingBox &, float, float);
-  std::vector<LShapePose> postProcessOutputs(const std::span<const float> &orient_batch,
-                                             const std::span<const float> &conf_batch,
-                                             const std::span<const float> &dims_batch,
-                                             const std::vector<BoundingBox> &bboxes);
+  geometry_msgs::msg::Pose
+  calcLocation(const std::array<double, 3> &, const BoundingBox &, float, float);
+  std::vector<LShapePose>
+  postProcessOutputs(const std::span<const float> &, const std::span<const float> &,
+                     const std::span<const float> &, const std::vector<BoundingBox> &);
   Eigen::Matrix3f rotationMatrix(float);
 };
 

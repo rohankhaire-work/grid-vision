@@ -8,7 +8,7 @@ GridVision::GridVision() : Node("grid_vision_node")
   image_topic_ = declare_parameter<std::string>("image_topic", "");
   lidar_topic_ = declare_parameter<std::string>("lidar_topic", "");
   det_weight_file_ = declare_parameter<std::string>("detection_weights_file", "");
-  vis_weight_file_ = declare_parameter<std::string>("vision_weight_file", "");
+  vis_weight_file_ = declare_parameter<std::string>("vision_weights_file", "");
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", "");
   camera_frame_ = declare_parameter<std::string>("camera_frame", "");
   base_frame_ = declare_parameter<std::string>("base_frame", "");
@@ -56,13 +56,14 @@ GridVision::GridVision() : Node("grid_vision_node")
   // Get weight paths
   std::string share_dir = ament_index_cpp::get_package_share_directory("grid_vision");
   std::string det_weight_path = share_dir + det_weight_file_;
+  std::string vis_weight_path = share_dir + vis_weight_file_;
 
   // Initialize ONNX runtime
   object_detection::initialize_onnx_runtime(session_, env_, session_options_,
                                             det_weight_path.c_str());
 
   // Initialize Vision orientation network
-  vision_orient_ = std::make_unique<VisionOrientation>(cam_params_, vis_weight_file_);
+  vision_orient_ = std::make_unique<VisionOrientation>(cam_params_, vis_weight_path);
 
   // Initialize tf2 for transforms
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -131,7 +132,7 @@ void GridVision::timerCallback()
   auto duration_ms
     = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
-  // RCLCPP_INFO(this->get_logger(), "Inference took %ld ms", duration_ms);
+  RCLCPP_INFO(this->get_logger(), "2D detection took %ld ms", duration_ms);
 
   // Extract Bboxes
   std::vector<BoundingBox> bboxes = object_detection::extract_bboxes(
@@ -188,22 +189,50 @@ void GridVision::timerCallback()
   {
     if(use_vision_orientation_)
     {
+      auto start_time = std::chrono::steady_clock::now();
       // Run vision orientation network
-      vision_orient_->runInference(init_image_, dynamic_bboxes);
+      bboxes_pose = vision_orient_->runInference(init_image_, dynamic_bboxes);
+
+      // Get run time
+      auto end_time = std::chrono::steady_clock::now();
+      auto duration_ms
+        = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time)
+            .count();
+
+      RCLCPP_INFO(this->get_logger(), "Vision Orientation took %ld ms", duration_ms);
 
       // Transform pose from cam frame to base frame
       transformLShapeObjects(bboxes_pose);
+
+      // Update OccupancyGridMap
+      occ_grid_->updateMap(occ_grid_->grid_map_, bboxes_pose);
     }
     else
     {
+      auto start_time = std::chrono::steady_clock::now();
       // Get the objects 3D pose and orienatation w.r.t
       // camera co-ordiante frame using PCA
       bboxes_pose = cloud_detections::computeBBoxPose(
         transformed_cloud, intrinsic_mat_, bboxes, init_image_.rows, init_image_.cols);
 
+      // Get run time
+      auto end_time = std::chrono::steady_clock::now();
+      auto duration_ms
+        = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time)
+            .count();
+
+      RCLCPP_INFO(this->get_logger(), "PCA Estimation took %ld ms", duration_ms);
+
       // Transform pose from cam frame to base frame
       transformLShapeObjects(bboxes_pose);
+
+      // Update OccupancyGridMap
+      occ_grid_->updateMap(occ_grid_->grid_map_, bboxes_pose);
     }
+  }
+  else
+  {
+    occ_grid_->updateMap(occ_grid_->grid_map_);
   }
 
   // Publish 2D detections and Occupancy grid
@@ -475,12 +504,12 @@ void GridVision::publishObjectVisualizations(
     box_marker.id = id++;
     box_marker.type = visualization_msgs::msg::Marker::CUBE;
     box_marker.action = visualization_msgs::msg::Marker::ADD;
-    box_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
+    box_marker.lifetime = rclcpp::Duration::from_seconds(0.1);
 
     box_marker.pose = box.pose;
     box_marker.scale.x = box.length;
     box_marker.scale.y = box.width;
-    box_marker.scale.z = 2.0;
+    box_marker.scale.z = box.height;
 
     box_marker.color.r = 0.0;
     box_marker.color.g = 0.5;

@@ -1,4 +1,5 @@
 #include "grid_vision/occupancy_grid.hpp"
+#include "grid_vision/cloud_detections.hpp"
 
 OccupancyGridMap::OccupancyGridMap(const std::string &base_link, uint8_t grid_x,
                                    uint8_t grid_y, double resolution)
@@ -42,17 +43,56 @@ void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
     auto base_point = base_points[idx];
     auto bbox_width = bboxes[idx].x_max - bboxes[idx].x_min;
     auto bbox_label = bboxes[idx].label;
-    if(bbox_label == ObjectClass::BIKE || bbox_label == ObjectClass::MOTORBIKE
-       || bbox_label == ObjectClass::PERSON || bbox_label == ObjectClass::VEHICLE)
-    {
-      // Compute the Rectangel from center point
-      std::array<geometry_msgs::msg::Point, 4> occ_corners
-        = computeBoundingBox3D(base_point, bbox_label);
 
-      // Update the grid cells in the map
-      updateGridCellsFast(grid_map, occ_corners);
-    }
+    // Compute the Rectangel from center point
+    std::array<geometry_msgs::msg::Point, 4> occ_corners
+      = computeBoundingBox3D(base_point, bbox_label);
+
+    // Update the grid cells in the map
+    updateGridCellsFast(grid_map, occ_corners);
   }
+  grid_map["log_odds"]
+    = grid_map["log_odds"].cwiseMax(min_log_odds_).cwiseMin(max_log_odds_);
+  // Convert log-odds to probability
+  for(grid_map::GridMapIterator it(grid_map); !it.isPastEnd(); ++it)
+  {
+    float log_odds_value = grid_map.at("log_odds", *it);
+    float probability = 1.0f / (1.0f + std::exp(-log_odds_value));
+    grid_map.at("occupancy", *it) = probability;
+  }
+}
+
+void OccupancyGridMap::updateMap(grid_map::GridMap &grid_map,
+                                 const std::vector<LShapePose> &bboxes_pose)
+{
+  // Decay all cells
+  grid_map["log_odds"].array() += log_odds_decay_;
+
+  // Process detected objects & update occupied cells
+  for(size_t idx = 0; idx < bboxes_pose.size(); ++idx)
+  {
+    geometry_msgs::msg::Point left_front;
+    geometry_msgs::msg::Point right_front;
+    geometry_msgs::msg::Point left_back;
+    geometry_msgs::msg::Point right_back;
+
+    left_front.x = bboxes_pose[idx].pose.position.x + bboxes_pose[idx].length / 2.0;
+    left_front.y = bboxes_pose[idx].pose.position.y - bboxes_pose[idx].width / 2.0;
+    right_front.x = bboxes_pose[idx].pose.position.x + bboxes_pose[idx].length / 2.0;
+    right_front.y = bboxes_pose[idx].pose.position.y + bboxes_pose[idx].width / 2.0;
+    left_back.x = bboxes_pose[idx].pose.position.x - bboxes_pose[idx].length / 2.0;
+    left_back.y = bboxes_pose[idx].pose.position.y - bboxes_pose[idx].width / 2.0;
+    right_back.x = bboxes_pose[idx].pose.position.x - bboxes_pose[idx].length / 2.0;
+    right_back.y = bboxes_pose[idx].pose.position.y + bboxes_pose[idx].width / 2.0;
+
+    // Compute the Rectangel from center point
+    std::array<geometry_msgs::msg::Point, 4> occ_corners
+      = {left_back, left_front, right_front, right_back};
+
+    // Update the grid cells in the map
+    updateGridCellsFast(grid_map, occ_corners);
+  }
+
   grid_map["log_odds"]
     = grid_map["log_odds"].cwiseMax(min_log_odds_).cwiseMin(max_log_odds_);
   // Convert log-odds to probability

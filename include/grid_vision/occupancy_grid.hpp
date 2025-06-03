@@ -2,7 +2,7 @@
 #define OCCUPANCY_GRID__OCCUPANCY_GRID_HPP_
 
 #include "grid_vision/object_detection.hpp"
-
+#include "grid_vision/cloud_detections.hpp"
 #include <grid_map_ros/grid_map_ros.hpp>
 #include <geometry_msgs/msg/point.hpp>
 
@@ -16,6 +16,7 @@ public:
   OccupancyGridMap(const std::string &, uint8_t, uint8_t, double);
   void updateMap(grid_map::GridMap &, const std::vector<geometry_msgs::msg::Point> &,
                  const std::vector<BoundingBox> &);
+  void updateMap(grid_map::GridMap &grid_map, const std::vector<LShapePose> &bboxes_pose);
   void updateMap(grid_map::GridMap &);
 
   grid_map::GridMap grid_map_;

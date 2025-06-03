@@ -3,7 +3,7 @@
     image_topic: "/carla/hero/front/image"   # Image topic to subscribe to
     lidar_topic: "/carla/hero/lidar"
     detection_weights_file: "/weights/yolov4_3l_416_416.onnx"  # Path to ONNX weights file
-    depth_weights_file: "/weights/rt_monodepth_full.engine" # Path to depth estimation file
+    vision_weights_file: "/weights/vision_orientation.engine" # Path to depth estimation file
     lidar_frame: "hero/lidar"
     camera_frame: "hero/front"
     base_frame: "hero"
@@ -21,4 +21,4 @@
     grid_x: 50
     grid_y: 20
     resolution: 0.1
-    use_vision_orientation: True
+    use_vision_orientation: true

@@ -48,7 +48,7 @@ install(TARGETS grid_vision
   DESTINATION lib/${PROJECT_NAME})
 
 install(
-  DIRECTORY config launch weights
+  DIRECTORY config launch weights rviz
   DESTINATION share/${PROJECT_NAME}
 )
 

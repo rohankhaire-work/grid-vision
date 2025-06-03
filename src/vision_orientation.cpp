@@ -1,4 +1,5 @@
 #include "grid_vision/vision_orientation.hpp"
+#include "grid_vision/object_detection.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -16,7 +17,7 @@ VisionOrientation::VisionOrientation(const CAMParams &cam_params,
 
   // Set projection matrix
   proj_mat_ << cam_params.fx, 0.0f, cam_params.cx, 0.0f, 0.0f, cam_params.fy,
-    cam_params.cy, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f;
+    cam_params.cy, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f;
 
   // Set up TRT
   initializeTRT(weight_file);
@@ -140,12 +141,18 @@ VisionOrientation::preprocessImage(const cv::Mat &image,
 cv::Mat
 VisionOrientation::getNetworkBoundingBox(const cv::Mat &img, const BoundingBox &bbox)
 {
+  // Clamp values within image bounds
+  int xmin = std::max(0, static_cast<int>(bbox.x_min));
+  int ymin = std::max(0, static_cast<int>(bbox.y_min));
+  int xmax = std::min(img.cols - 1, static_cast<int>(bbox.x_max));
+  int ymax = std::min(img.rows - 1, static_cast<int>(bbox.y_max));
+
   // Compute width and height
-  int width = bbox.x_max - bbox.x_min;
-  int height = bbox.y_max - bbox.y_min;
+  int width = xmax - xmin;
+  int height = ymax - ymin;
 
   // Crop ROI
-  cv::Rect roi(bbox.x_min, bbox.y_min, width, height);
+  cv::Rect roi(xmin, ymin, width, height);
   cv::Mat cropped = img(roi);
 
   // Resize to Network input dim
@@ -204,7 +211,7 @@ VisionOrientation::runInference(const cv::Mat &input_img,
   context->setInputTensorAddress("input", buffers_[0]);
   context->setOutputTensorAddress("orientation", buffers_[1]);
   context->setOutputTensorAddress("confidence", buffers_[2]);
-  context->setOutputTensorAddress("dims", buffers_[3]);
+  context->setOutputTensorAddress("dimension", buffers_[3]);
 
   // inference
   context->enqueueV3(stream_);
@@ -285,7 +292,7 @@ float VisionOrientation::computeThetaRay(const BoundingBox &bbox)
 }
 
 geometry_msgs::msg::Pose
-VisionOrientation::calcLocation(const std::span<const float> &dimension,
+VisionOrientation::calcLocation(const std::array<double, 3> &dimension,
                                 const BoundingBox &bbox, float alpha, float theta_ray)
 {
   float orient = alpha + theta_ray;
@@ -296,9 +303,9 @@ VisionOrientation::calcLocation(const std::span<const float> &dimension,
        static_cast<float>(bbox.x_max), static_cast<float>(bbox.y_max)};
 
   // Dimension halves
-  float dx = dimension[2] / 2.0f; // length / 2
-  float dy = dimension[0] / 2.0f; // height / 2
-  float dz = dimension[1] / 2.0f; // width / 2
+  float dx = dimension[0] / 2.0f; // length / 2
+  float dy = dimension[1] / 2.0f; // height / 2
+  float dz = dimension[2] / 2.0f; // width / 2
 
   // Determine multipliers based on alpha
   int left_mult = 1, right_mult = -1;
@@ -379,15 +386,18 @@ VisionOrientation::calcLocation(const std::span<const float> &dimension,
   {
     // Create M matrices for each corner
     std::array<Eigen::Matrix4f, 4> M_array;
+    std::array<Eigen::Matrix<float, 3, 4>, 4> projected_M_array;
+
     for(int i = 0; i < 4; ++i)
     {
       M_array[i] = pre_M;
+
       Eigen::Vector3f RX
         = R * Eigen::Vector3f(constraint[i].x, constraint[i].y, constraint[i].z);
       M_array[i].block<3, 1>(0, 3) = RX;
-      M_array[i] = proj_mat_ * M_array[i];
-    }
 
+      projected_M_array[i] = proj_mat_ * M_array[i];
+    }
     // Construct A (4x3) and b (4x1)
     Eigen::Matrix<float, 4, 3> A;
     Eigen::Matrix<float, 4, 1> b;
@@ -395,7 +405,7 @@ VisionOrientation::calcLocation(const std::span<const float> &dimension,
     for(int row = 0; row < 4; ++row)
     {
       int idx = indices[row];
-      const Eigen::Matrix4f &M = M_array[row];
+      const Eigen::Matrix<float, 3, 4> &M = projected_M_array[row];
       float box_val = box_corners[row];
 
       // A row: M[idx, :3] - box_corners[row] * M[2, :3]
@@ -421,9 +431,9 @@ VisionOrientation::calcLocation(const std::span<const float> &dimension,
 
   geometry_msgs::msg::Pose best_pose;
 
-  best_pose.position.x = best_loc[2];
+  best_pose.position.x = best_loc[0];
   best_pose.position.y = best_loc[1];
-  best_pose.position.z = best_loc[0];
+  best_pose.position.z = best_loc[2];
 
   // Pose (orientation as quaternion)
   tf2::Quaternion q;
@@ -459,13 +469,40 @@ VisionOrientation::postProcessOutputs(const std::span<const float> &orient_batch
     float alpha = computeAlpha(orient_sample, conf_sample, argmax);
     float theta_ray = computeThetaRay(bboxes[i]);
 
-    geometry_msgs::msg::Pose bbox_pose
-      = calcLocation(dims_sample, bboxes[i], alpha, theta_ray);
+    if(bboxes[i].label == ObjectClass::VEHICLE)
+    {
+      result.length = dims_sample[2] + car_avg_len_;
+      result.width = dims_sample[0] + car_avg_wid_;
+      result.height = dims_sample[1] + car_avg_ht_;
+    }
+    else if(bboxes[i].label == ObjectClass::BIKE)
+    {
+      result.length = dims_sample[2] + bicycle_avg_len_;
+      result.width = dims_sample[0] + bicycle_avg_wid_;
+      result.height = dims_sample[1] + bicycle_avg_ht_;
+    }
+    else if(bboxes[i].label == ObjectClass::MOTORBIKE)
+    {
+      result.length = dims_sample[2] + bike_avg_len_;
+      result.width = dims_sample[0] + bike_avg_wid_;
+      result.height = dims_sample[1] + bike_avg_ht_;
+    }
+    else if(bboxes[i].label == ObjectClass::PERSON)
+    {
+      result.length = dims_sample[2] + person_avg_len_;
+      result.width = dims_sample[0] + person_avg_wid_;
+      result.height = dims_sample[1] + person_avg_ht_;
+    }
+    else
+    {
+      continue;
+    }
+
+    std::array<double, 3> lwh = {result.length, result.width, result.height};
+
+    geometry_msgs::msg::Pose bbox_pose = calcLocation(lwh, bboxes[i], alpha, theta_ray);
 
     result.pose = bbox_pose;
-    result.length = dims_sample[argmax * 3 + 2];
-    result.height = dims_sample[argmax * 3 + 0];
-    result.width = dims_sample[argmax * 3 + 1];
 
     bbox_3d.emplace_back(result);
   }
